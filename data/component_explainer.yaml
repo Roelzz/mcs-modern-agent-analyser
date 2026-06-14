@@ -1,0 +1,116 @@
+# Curated knowledge base for the modern-agent Component Explorer.
+#
+# Every entry's `summary` and `doc` MUST trace to a primary Microsoft Learn
+# source. Do NOT add LLM-generated explanations — when a kind/setting isn't
+# verified against a primary source, leave it out and let the explainer emit
+# the `sentinel` text below. CLI-internal values (CLICopilotRecognizer,
+# cliagent template, PowerVirtualAgents runtime, model series codes) are not
+# publicly documented, so they are intentionally absent → sentinel.
+#
+# Format
+#   entries:
+#     <key>:
+#       summary: "Short, source-grounded description"
+#       doc:     "https://learn.microsoft.com/..."
+#       values:                     # optional — for enum-style settings
+#         <value>:
+#           summary: "..."
+
+schema_version: 1
+
+sentinel: "Not yet documented in the explainer KB — verify against Microsoft Learn."
+
+entries:
+
+  # ─── Agent settings ──────────────────────────────────────────────────────
+
+  model:
+    summary: >-
+      The primary generative AI model the agent uses to understand requests and
+      generate responses. The chosen model affects answer quality, capability,
+      and Copilot Credit consumption.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/authoring-select-agent-model"
+
+  instructions:
+    summary: >-
+      Natural-language guidance that tells the agent how to behave, what tone to
+      use, and which steps to follow. With generative orchestration the model
+      reads these instructions to plan its actions and ground its answers.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/authoring-instructions"
+
+  orchestration:
+    summary: >-
+      Generative orchestration lets the agent use its model to dynamically pick
+      knowledge, tools, and topics to fulfil a request, rather than following a
+      fixed dialog tree.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/guidance/generative-orchestration"
+
+  authenticationMode:
+    summary: >-
+      Controls whether and how users sign in before using the agent. Options
+      range from no authentication (anonymous) to authenticating with Microsoft
+      (Microsoft Entra ID) or a manually configured identity provider.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/configuration-end-user-authentication"
+    values:
+      Integrated:
+        summary: >-
+          Authenticate with Microsoft — users sign in with their Microsoft Entra
+          ID, and the agent runs with the user's identity and permissions.
+
+  authenticationTrigger:
+    summary: >-
+      Determines when the agent asks the user to sign in — for example, always
+      at the start of a conversation, or only when an action requires it.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/configuration-end-user-authentication"
+    values:
+      Always:
+        summary: "The user is required to authenticate at the start of every conversation."
+
+  accessControlPolicy:
+    summary: >-
+      Governs who in the organization can access the agent. Sharing with a
+      security group restricts use to members of that group.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/admin-share-bots"
+    values:
+      GroupMembership:
+        summary: "Access is restricted to members of the assigned security group(s)."
+
+  conversationStarters:
+    summary: >-
+      Suggested opening prompts surfaced when a conversation begins, helping
+      users discover what the agent can do.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/configure-bot-greeting"
+
+  # ─── Knowledge ───────────────────────────────────────────────────────────
+
+  knowledge:
+    summary: >-
+      Knowledge sources give the agent grounded, organization-specific
+      information to answer from, instead of relying only on the model's
+      built-in knowledge.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/knowledge-add-existing-copilot"
+
+  knowledge.SharePointKnowledgeSource:
+    summary: >-
+      A SharePoint site or document library used as a knowledge source. The
+      agent searches its files and cites them in answers, respecting the user's
+      SharePoint permissions.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/knowledge-add-sharepoint"
+
+  # ─── Environment variables ───────────────────────────────────────────────
+
+  environmentVariable:
+    summary: >-
+      Environment variables externalize configuration (such as URLs or IDs) so
+      values can change between environments without editing the agent. They are
+      stored in the solution and set per environment.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/authoring-variables-about"
+
+  # ─── Tools & actions ─────────────────────────────────────────────────────
+
+  tool:
+    summary: >-
+      Tools (actions) let the agent do things beyond answering — call
+      connectors, run flows, invoke prompts, or hand off to other agents — which
+      the generative orchestrator can choose to use to complete a task.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/guidance/agent-tools"
