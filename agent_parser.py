@@ -15,7 +15,7 @@ from urllib.parse import unquote
 import yaml
 from loguru import logger
 
-from models import AgentProfile, EnvVar, KnowledgeSource, ToolComponent
+from models import AgentProfile, EnvVar, KnowledgeSource, ToolComponent, ToolOperation, ToolProvider
 
 # Best-effort friendly labels for the `model.series` value. Falls back to raw.
 _MODEL_LABELS: dict[str, str] = {
@@ -49,6 +49,97 @@ _TOOL_LIST_KEYS = (
 
 # Component kinds (in `components`) that are NOT plain knowledge sources.
 _TOOL_COMPONENT_KINDS = {"DialogComponent", "TaskDialog", "AgentDialog"}
+
+# Top-level list key -> tool-provider kind. Used to build the Provider→Operation
+# hierarchy. MCP servers are detected separately by `_looks_mcp` because they are
+# usually exported as a connector-flavoured definition.
+_PROVIDER_KIND_BY_KEY = {
+    "flows": "flow",
+    "connectorDefinitions": "connector",
+    "connectionReferences": "connector",
+    "aIPluginOperations": "connector",
+    "connectedAgentDefinitions": "connectedAgent",
+    "connectedBots": "connectedAgent",
+}
+
+# Sub-keys under a provider definition that may hold its operations.
+_OPERATION_SUBKEYS = ("operations", "actions", "tools", "aIPluginOperations", "methods", "functions")
+# Human-facing label precedence (friendly name beats machine slug).
+_LABEL_KEYS = ("displayName", "name", "title", "schemaName", "id")
+# Operation machine-name precedence (the stable id beats the friendly label).
+_OPNAME_KEYS = ("name", "schemaName", "id", "displayName", "title")
+
+
+def _first_str(item: dict, *keys: str) -> str | None:
+    for k in keys:
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _looks_mcp(item: dict) -> bool:
+    """Best-effort: a connector definition is an MCP server when 'mcp' shows up
+    in any of its identifying fields. Modern exports flag MCP tools this way."""
+    blob = " ".join(
+        str(item.get(k, "")) for k in ("kind", "name", "schemaName", "displayName", "type", "connectorType")
+    ).lower()
+    return "mcp" in blob
+
+
+def _extract_operations(item: dict) -> list[ToolOperation]:
+    ops: list[ToolOperation] = []
+    seen: set[str] = set()
+    for sk in _OPERATION_SUBKEYS:
+        raw = item.get(sk)
+        entries: list = raw if isinstance(raw, list) else (list(raw.values()) if isinstance(raw, dict) else [])
+        for op in entries:
+            if not isinstance(op, dict):
+                if isinstance(op, str) and op.strip() and op.lower() not in seen:
+                    seen.add(op.lower())
+                    ops.append(ToolOperation(name=op.strip()))
+                continue
+            name = _first_str(op, *_OPNAME_KEYS)
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            ops.append(
+                ToolOperation(
+                    name=name,
+                    display_name=_first_str(op, "displayName", "title"),
+                    description=op.get("description") if isinstance(op.get("description"), str) else None,
+                )
+            )
+    return ops
+
+
+def _parse_tool_providers(raw: dict) -> list[ToolProvider]:
+    """Defensive extraction of the Provider→Operation hierarchy from the modern
+    BotDefinition. Knowledge agents have empty tool arrays, so this returns []
+    for them; it only lights up when an export actually declares MCP servers,
+    connectors, connected agents or flows."""
+    providers: list[ToolProvider] = []
+    for key, base_kind in _PROVIDER_KIND_BY_KEY.items():
+        for item in raw.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            kind = "mcpServer" if (base_kind == "connector" and _looks_mcp(item)) else base_kind
+            name = _first_str(item, *_LABEL_KEYS) or kind
+            providers.append(
+                ToolProvider(
+                    kind=kind,
+                    display_name=name,
+                    schema_name=_first_str(item, "schemaName", "name"),
+                    description=item.get("description") if isinstance(item.get("description"), str) else None,
+                    source=_first_str(item, "url", "endpoint", "connectionUrl", "host", "cdsBotId", "botId"),
+                    configured=True,
+                    operations=_extract_operations(item),
+                )
+            )
+    if providers:
+        logger.info(f"Parsed {len(providers)} tool provider(s) from agent definition.")
+    return providers
+
 
 
 def friendly_model(series: str | None) -> str | None:
@@ -174,6 +265,7 @@ def parse_agent_obj(raw: dict, source: str = "<obj>") -> AgentProfile:
                 )
 
     env_vars = [_parse_env_var(ev) for ev in (raw.get("environmentVariables") or []) if isinstance(ev, dict)]
+    tool_providers = _parse_tool_providers(raw)
 
     entity = raw.get("entity") or {}
     audit = entity.get("auditInfo") or {}
@@ -204,6 +296,7 @@ def parse_agent_obj(raw: dict, source: str = "<obj>") -> AgentProfile:
         knowledge_sources=knowledge_sources,
         environment_variables=env_vars,
         tool_components=tool_components,
+        tool_providers=tool_providers,
         created_at=_str_or_none(audit.get("createdTimeUtc")),
         modified_at=_str_or_none(audit.get("modifiedTimeUtc")),
     )

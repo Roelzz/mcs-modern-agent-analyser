@@ -87,10 +87,18 @@ def test_credit_totals_knowledge(knowledge):
     _, _, report = knowledge
     est = report.credit_estimate
     assert est is not None
-    # 2 searches (2 each) + 1 skill action (5) = 9
-    assert est.total_credits == 9
+    # Feature meters are unchanged: 2 searches (2 each) + 1 skill action (5) = 9.
     assert est.by_kind["generative_answer"] == 4
     assert est.by_kind["agent_action"] == 5
+    # Sonnet 4.6 is a reasoning model → premium token meter stacks on top.
+    assert est.reasoning_model is True
+    assert est.total_tokens > 0
+    assert est.by_kind.get("premium_reasoning", 0) > 0
+    # The document-analysis skill bills content-processing (8 CC/page).
+    assert est.by_kind.get("content_processing", 0) == 8
+    # Total is self-consistent and strictly above the 9-credit feature subtotal.
+    assert est.total_credits == round(sum(li.credits for li in est.line_items), 2)
+    assert est.total_credits > 9
     assert any("Heuristic estimate" in n for n in est.notes)
     assert any(CREDIT_SOURCE_URL in n for n in est.notes)
 
@@ -100,7 +108,12 @@ def test_credit_rates_are_env_overridable(knowledge, monkeypatch):
     monkeypatch.setenv("CREDIT_AGENT_ACTION", "50")
     est = estimate_credits(profile, convo)
     assert est.by_kind["agent_action"] == 50
-    assert est.total_credits == 54  # 4 generative + 50 action
+    assert est.by_kind["generative_answer"] == 4
+    # Feature subtotal is 54 (4 generative + 50 action); premium/content stack above it.
+    feature = est.by_kind["generative_answer"] + est.by_kind["agent_action"]
+    assert feature == 54
+    assert est.total_credits == round(sum(li.credits for li in est.line_items), 2)
+    assert est.total_credits > 54
 
 
 # --- #8 Component explorer (explainer KB + builder) ------------------------
@@ -154,7 +167,10 @@ def test_map_report_feature_scalars(knowledge):
     assert vm.eff_total_searches == 2
     assert vm.cit_dangling == 0
     assert vm.cit_resolved >= 3
-    assert vm.credit_total == "9"
+    # Credit total now reflects the modern reasoning-model meter stack; assert it is
+    # self-consistent with the report rather than a fixed feature-only subtotal.
+    assert vm.credit_total == f"{report.credit_estimate.total_credits:g}"
+    assert float(vm.credit_total) > 9
     assert vm.has_credits is True
     assert len(vm.components) > 0
 
@@ -176,6 +192,12 @@ def test_exports_include_feature_sections(knowledge):
 def test_render_components_sentinel_dash(knowledge):
     profile, convo, report = knowledge
     table = render_components(report, convo)
-    # CLI-internal settings have no doc → "—" reference cell
-    assert "| Recognizer |" in table
-    assert "—" in table
+    # Nested hierarchy with grouped sections.
+    assert "## Components" in table
+    assert "### Agent" in table
+    # CLI-internal settings (Recognizer) have no doc → no Learn link on that line.
+    rec_line = next(ln for ln in table.splitlines() if "**Recognizer**" in ln)
+    assert "[Learn]" not in rec_line
+    # A documented setting (Model) does carry a Learn link.
+    model_line = next(ln for ln in table.splitlines() if "**Model**" in ln)
+    assert "[Learn](https://learn.microsoft.com/" in model_line

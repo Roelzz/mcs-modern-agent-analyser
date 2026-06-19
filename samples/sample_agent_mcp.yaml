@@ -1,0 +1,92 @@
+# Synthetic modern agent used to demonstrate/test the hierarchical Component
+# Explorer (MCP server + connector + connected agent + flow). This is NOT a real
+# Copilot Studio export — the tool-definition shapes are illustrative and the
+# parser reads them defensively.
+kind: BotDefinition
+components:
+  - kind: KnowledgeSourceComponent
+    displayName: Expense-Policies
+    schemaName: expense_policies
+    description: Expense and reimbursement policy documents.
+    configuration:
+      kind: KnowledgeSourceConfiguration
+      source:
+        kind: SharePointKnowledgeSource
+        siteUrl: https://contoso.sharepoint.com/sites/Finance/Shared%20Documents/Expense-Policies
+environmentVariables:
+  - kind: EnvironmentVariableDefinition
+    displayName: Expense approval threshold
+    schemaName: contoso_ExpenseApprovalThreshold
+    defaultValue: "1000"
+    type: Number
+flows:
+  - kind: WorkflowDefinition
+    displayName: Notify Manager
+    schemaName: contoso_NotifyManager
+    description: Sends the submitted expense report to the employee's manager for approval.
+    operations:
+      - name: run
+        displayName: Run flow
+connectorDefinitions:
+  - kind: CustomConnector
+    displayName: Zava Expense MCP
+    schemaName: zava_expense_mcp
+    description: MCP server exposing Zava expense-management tools.
+    connectorType: McpServer
+    url: https://mcp.zava.example/sse
+    operations:
+      - name: create_new_expense_report
+        displayName: Create new expense report
+        description: Creates a draft expense report for the current user.
+      - name: get_expense_categories
+        displayName: Get expense categories
+        description: Lists the valid expense categories the user can pick from.
+      - name: submit_expense_report
+        displayName: Submit expense report
+        description: Submits a draft expense report for approval.
+  - kind: CustomConnector
+    displayName: MSN Weather
+    schemaName: msnweather
+    description: Power Platform connector for current weather conditions.
+    operations:
+      - name: GetCurrentWeather
+        displayName: Get current weather
+connectedAgentDefinitions:
+  - kind: ConnectedAgentDefinition
+    displayName: HR Assistant
+    schemaName: hr_assistant
+    description: Connected agent that answers HR-policy questions and handles handoffs.
+    botId: 11112222-3333-4444-5555-666677778888
+    operations:
+      - name: answer_hr_question
+        displayName: Answer HR question
+entity:
+  kind: BotEntity
+  displayName: Expense agent
+  schemaName: contoso_expense_agent
+  cdsBotId: 99990000-1111-2222-3333-444455556666
+  accessControlPolicy: GroupMembership
+  authenticationMode: Integrated
+  authenticationTrigger: Always
+  runtimeProvider: PowerVirtualAgents
+  auditInfo:
+    kind: AuditInfo
+    createdTimeUtc: 2026-06-10T09:00:00Z
+    modifiedTimeUtc: 2026-06-12T16:30:00Z
+  configuration:
+    kind: BotConfiguration
+    recognizer:
+      kind: CLICopilotRecognizer
+    agentSettings:
+      kind: AgentSettings
+      model:
+        series: Sonnet46
+      instructions:
+        segments:
+          - kind: StaticSegment
+            value: You help employees create and submit expense reports. Use the Zava Expense MCP tools to do the work, and hand off HR questions to the connected HR Assistant agent.
+      enableMemory: true
+      conversationStarters:
+        - File a new expense report
+        - What expense categories can I use?
+  template: cliagent-1.0.0

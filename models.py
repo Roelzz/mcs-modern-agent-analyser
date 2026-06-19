@@ -45,6 +45,30 @@ class ToolComponent(BaseModel):
     description: str | None = None
 
 
+class ToolOperation(BaseModel):
+    """A single capability ("what it can do") exposed by a tool provider — e.g.
+    one MCP tool, one connector action, or one runtime tool call."""
+
+    name: str
+    display_name: str | None = None
+    description: str | None = None
+    configured: bool = True  # False = only observed at runtime, not in the YAML
+
+
+class ToolProvider(BaseModel):
+    """A container that groups one or more operations: an MCP server, a
+    connector, a connected agent, a flow, a skill, or a bucket of built-in
+    actions. The hierarchy is Provider → Operation."""
+
+    kind: str  # mcpServer | connector | connectedAgent | flow | skill | action
+    display_name: str
+    schema_name: str | None = None
+    description: str | None = None
+    source: str | None = None  # best-effort url / connector id / bot id
+    configured: bool = True  # True = declared in YAML, False = inferred at runtime
+    operations: list[ToolOperation] = Field(default_factory=list)
+
+
 class AgentProfile(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -69,6 +93,7 @@ class AgentProfile(BaseModel):
     knowledge_sources: list[KnowledgeSource] = Field(default_factory=list)
     environment_variables: list[EnvVar] = Field(default_factory=list)
     tool_components: list[ToolComponent] = Field(default_factory=list)
+    tool_providers: list[ToolProvider] = Field(default_factory=list)
 
     created_at: str | None = None
     modified_at: str | None = None
@@ -90,6 +115,7 @@ class RetrievedDoc(BaseModel):
     title: str | None = None
     url: str | None = None
     reference_id: str | None = None  # e.g. turn1doc1
+    snippet: str | None = None  # summary text returned with the doc (often a sandbox notice)
 
 
 class ToolCall(BaseModel):
@@ -130,12 +156,19 @@ class Thought(BaseModel):
         return self.description or self.title or ""
 
 
+class FileAttachment(BaseModel):
+    name: str = ""  # e.g. HR_Onboarding_Policies.pptx
+    file_type: str = ""  # pptx / docx / xlsx / pdf / png ...
+    content_type: str = ""  # MIME, e.g. application/octet-stream
+
+
 class Message(BaseModel):
     role: str  # bot / user
     id: str | None = None
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     thoughts: list[Thought] = Field(default_factory=list)
+    file_attachments: list[FileAttachment] = Field(default_factory=list)
     occurred_at: str | None = None  # optional, usually absent in modern transcripts
 
     @property
@@ -191,6 +224,10 @@ class Conversation(BaseModel):
     @property
     def thoughts(self) -> list[Thought]:
         return [t for m in self.messages for t in m.thoughts]
+
+    @property
+    def file_attachments(self) -> list[FileAttachment]:
+        return [a for m in self.messages for a in m.file_attachments]
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +360,7 @@ class CitationAuditRow(BaseModel):
     source: str | None = None  # site root the doc came from
     turn_index: int | None = None  # turn where the citation appeared (resolved/dangling)
     provenance: str | None = None  # search query that produced the doc
+    cross_turn: bool = False  # resolved from a doc retrieved in an earlier turn (C1)
 
 
 class CitationAudit(BaseModel):
@@ -334,9 +372,11 @@ class CitationAudit(BaseModel):
 
 class CreditLineItem(BaseModel):
     label: str
-    kind: str  # generative_answer / agent_action / classic_answer
+    kind: str  # generative_answer / agent_action / classic_answer / premium_reasoning / content_processing / tenant_graph
     credits: float
     detail: str = ""
+    turn_index: int | None = None  # for the per-turn credit stack
+    tokens: int = 0  # estimated tokens (premium reasoning meter)
 
 
 class CreditEstimate(BaseModel):
@@ -344,6 +384,269 @@ class CreditEstimate(BaseModel):
     total_credits: float = 0.0
     by_kind: dict[str, float] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
+    # Modern-agent credit model extras
+    reasoning_model: bool = False  # model is reasoning-capable → premium token surcharge applies
+    total_tokens: int = 0  # heuristic token total feeding the premium meter
+    assumptions: list[str] = Field(default_factory=list)
+
+
+# --- #10 Failed-tool & recovery deep-dive -----------------------------------
+
+
+class ToolFailure(BaseModel):
+    turn_index: int
+    name: str
+    params_summary: str = ""
+    error_text: str = ""
+    embedded: bool = False  # True = status said "completed" but the result carried an error
+    recovery: str = "gave-up"  # retried-same / recovered-other-tool / unhandled-but-answered / gave-up
+    next_action: str | None = None  # the tool that recovered (if any)
+
+
+class ToolFailureAnalysis(BaseModel):
+    failures: list[ToolFailure] = Field(default_factory=list)
+    total_failures: int = 0
+    embedded_failures: int = 0  # subset hidden behind a "completed" status
+    recovered: int = 0  # retried-same or recovered-other-tool
+    gave_up: int = 0
+
+
+# --- #6 Tool-call redundancy / efficiency -----------------------------------
+
+
+class DuplicateGroup(BaseModel):
+    name: str
+    params_summary: str = ""
+    count: int = 0
+    turns: list[int] = Field(default_factory=list)
+
+
+class ToolEfficiency(BaseModel):
+    total_calls: int = 0
+    unique_calls: int = 0
+    redundant_calls: int = 0  # calls beyond the first in each duplicate group
+    calls_per_answer: float = 0.0
+    duplicate_groups: list[DuplicateGroup] = Field(default_factory=list)
+
+
+# --- #5 Repetition / loop detection -----------------------------------------
+
+
+class RepetitionSignal(BaseModel):
+    kind: str  # agent-answer / agent-tool / user-question
+    turns: list[int] = Field(default_factory=list)
+    similarity: float = 0.0
+    excerpt: str = ""
+
+
+class RepetitionAnalysis(BaseModel):
+    signals: list[RepetitionSignal] = Field(default_factory=list)
+
+
+# --- #2 Per-answer groundedness / hallucination risk ------------------------
+
+
+class AnswerGroundedness(BaseModel):
+    turn_index: int
+    factual_claims: int = 0
+    cited_claims: int = 0
+    had_retrieval: bool = False
+    risk: str = "low"  # low / medium / high
+    excerpt: str = ""
+
+
+class AnswerGroundednessAnalysis(BaseModel):
+    answers: list[AnswerGroundedness] = Field(default_factory=list)
+    high_risk: int = 0
+    medium_risk: int = 0
+    low_risk: int = 0
+
+
+# --- #11 Citation quote-traceability ----------------------------------------
+
+
+class QuoteCheck(BaseModel):
+    turn_index: int
+    excerpt: str = ""
+    ref_id: str | None = None
+    source_title: str | None = None
+    # verified-in-tool-output / attributed-source-in-sandbox / dangling-attribution / unattributed-quote
+    verdict: str = "unattributed-quote"
+
+
+class QuoteFaithfulness(BaseModel):
+    quotes: list[QuoteCheck] = Field(default_factory=list)
+    verified: int = 0
+    attributed: int = 0  # cited to a retrieved doc whose full text isn't in the transcript
+    dangling: int = 0
+    unattributed: int = 0
+
+
+# --- #12 Knowledge coverage-gap report --------------------------------------
+
+
+class CoverageGap(BaseModel):
+    turn_index: int
+    user_question: str = ""
+    reason: str = "uncited-answer"  # zero-result-search / acknowledged-gap / uncited-answer
+    query: str = ""
+
+
+class CoverageGapAnalysis(BaseModel):
+    gaps: list[CoverageGap] = Field(default_factory=list)
+
+
+# --- #16 Turn-economy -------------------------------------------------------
+
+
+class TurnEconomy(BaseModel):
+    turns: int = 0
+    user_turns: int = 0
+    tool_calls: int = 0
+    calls_per_answer: float = 0.0
+    searches_to_first_answer: int = 0
+    avg_bot_msgs_per_turn: float = 0.0
+
+
+# --- D · Code interpreter / sandbox activity (D1, D2, D3) --------------------
+
+
+class SandboxSignal(BaseModel):
+    turn_index: int
+    category: str  # read-document / preprocess / inspect-fs / permissions / shell-other
+    tool: str = ""  # bash / grep / view / python / sudo / ...
+    excerpt: str = ""
+
+
+class SandboxFriction(BaseModel):
+    turn_index: int
+    kind: str  # permission-denied / retry / alternative-approach
+    excerpt: str = ""
+    recovered: bool = False
+
+
+class SkillUse(BaseModel):
+    turn_index: int | None = None
+    name: str  # e.g. analyzing-docx
+    category: str = "other"  # document-processing / other
+    note: str = ""
+
+
+class SkillGap(BaseModel):
+    """G3 — the agent wanted a skill that wasn't available and fell back to raw code."""
+
+    turn_index: int
+    wanted: str = ""  # e.g. creating-pptx / a deck skill
+    fallback: str = ""  # e.g. python (python-pptx)
+    excerpt: str = ""
+
+
+class CodeInterpreterAnalysis(BaseModel):
+    signals: list[SandboxSignal] = Field(default_factory=list)
+    friction: list[SandboxFriction] = Field(default_factory=list)
+    skills: list[SkillUse] = Field(default_factory=list)
+    skill_gaps: list[SkillGap] = Field(default_factory=list)  # G3
+    turns_with_code: int = 0
+    distinct_tools: list[str] = Field(default_factory=list)
+    friction_count: int = 0
+    document_processing_skills: int = 0
+    authoring_turns: list[int] = Field(default_factory=list)  # G2 — turns generating/authoring files
+    analysis_turns: list[int] = Field(default_factory=list)  # G2 — turns reading/preprocessing docs
+    used: bool = False
+
+
+# --- G1 · Generated file artifacts -----------------------------------------
+
+
+class GeneratedArtifact(BaseModel):
+    turn_index: int | None = None
+    name: str = ""  # HR_Onboarding_Policies.pptx
+    file_type: str = ""  # pptx / docx / xlsx ...
+    content_type: str = ""
+    how_made: str = "unknown"  # python / skill / unknown
+    evidence: str = ""
+
+
+class GeneratedArtifacts(BaseModel):
+    items: list[GeneratedArtifact] = Field(default_factory=list)
+    count: int = 0
+    by_type: dict[str, int] = Field(default_factory=dict)
+
+
+# --- G4 · Document grounding pipeline ---------------------------------------
+
+
+class GroundingDoc(BaseModel):
+    title: str = ""
+    url: str | None = None
+    reference_id: str | None = None
+    searched: bool = False  # returned by a KnowledgeSearch
+    downloaded: bool = False  # full file pushed to the sandbox
+    preprocessed: bool = False  # converted (e.g. docx -> converted.md) in the sandbox
+    read_full: bool = False  # agent read/greped the full file
+    cited: bool = False  # referenced by a [n] marker in an answer
+
+
+class GroundingPipeline(BaseModel):
+    snippet_mode: str = "unknown"  # stub / content / mixed — does search return real text or a download notice?
+    span_visibility: str = "unknown"  # document-level / span-level — can we tell which passage was used?
+    docs: list[GroundingDoc] = Field(default_factory=list)
+    stub_results: int = 0  # number of retrieved docs whose "snippet" was only a sandbox-download notice
+    content_results: int = 0  # retrieved docs that carried real snippet text
+    notes: list[str] = Field(default_factory=list)
+
+
+# --- B · Knowledge retrieval depth (B1, B2, B3, B4) -------------------------
+
+
+class KnowledgeFolder(BaseModel):
+    path: str  # e.g. Recruitment-and-Onboarding/Hiring
+    area: str  # top-level area, e.g. Recruitment-and-Onboarding
+    count: int = 0  # distinct docs retrieved from this folder
+    doc_titles: list[str] = Field(default_factory=list)
+
+
+class DocRetrieval(BaseModel):
+    reference_id: str | None = None
+    title: str = ""
+    retrieval_count: int = 0  # how many searches returned this doc
+    turns: list[int] = Field(default_factory=list)
+    cited: bool = False
+
+
+class RetrievalDepth(BaseModel):
+    folders: list[KnowledgeFolder] = Field(default_factory=list)
+    doc_retrievals: list[DocRetrieval] = Field(default_factory=list)
+    total_retrieved: int = 0  # sum across searches (with duplicates)
+    unique_docs: int = 0
+    overlap_docs: int = 0  # docs returned by more than one search
+    cited_docs: int = 0
+    over_retrieval_ratio: float = 0.0  # 1 - cited/unique
+    retrieval_mode: str = "inline"  # inline / snippet+sandbox
+    full_doc_reads: int = 0  # turns where the agent read the full sandbox file
+
+
+# --- A · Search & query strategy (A1, A2) -----------------------------------
+
+
+class RecallTurn(BaseModel):
+    turn_index: int
+    excerpt: str = ""
+
+
+class SearchPrecision(BaseModel):
+    turn_index: int
+    query: str = ""
+    retrieved: int = 0
+    cited_from_search: int = 0  # docs from THIS search that ended up cited
+    productive: bool = False  # at least one retrieved doc was cited
+
+
+class SearchStrategy(BaseModel):
+    recall_turns: list[RecallTurn] = Field(default_factory=list)  # answered from prior retrieval, no new search
+    searches: list[SearchPrecision] = Field(default_factory=list)
+    productive_searches: int = 0
+    unproductive_searches: int = 0
 
 
 class AnalysisReport(BaseModel):
@@ -359,4 +662,18 @@ class AnalysisReport(BaseModel):
     instructions: InstructionCompliance | None = None
     cross_reference: CrossReference | None = None
     credit_estimate: CreditEstimate | None = None
+    # New analysis features
+    tool_failures: ToolFailureAnalysis | None = None  # #10
+    tool_efficiency: ToolEfficiency | None = None  # #6
+    repetition: RepetitionAnalysis | None = None  # #5
+    answer_groundedness: AnswerGroundednessAnalysis | None = None  # #2
+    quote_faithfulness: QuoteFaithfulness | None = None  # #11
+    coverage_gaps: CoverageGapAnalysis | None = None  # #12
+    turn_economy: TurnEconomy | None = None  # #16
+    # Modern-agent deep-analysis features
+    code_interpreter: CodeInterpreterAnalysis | None = None  # D1, D2, D3
+    retrieval_depth: RetrievalDepth | None = None  # B1, B2, B3, B4
+    search_strategy: SearchStrategy | None = None  # A1, A2
+    generated_artifacts: GeneratedArtifacts | None = None  # G1
+    grounding_pipeline: GroundingPipeline | None = None  # G4
     findings: list[Finding] = Field(default_factory=list)

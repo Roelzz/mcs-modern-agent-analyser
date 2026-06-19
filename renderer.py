@@ -24,6 +24,10 @@ def _cell(text: str | None) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _yn(value: bool) -> str:
+    return "yes" if value else "—"
+
+
 def _seq(text: str, limit: int = 70) -> str:
     """Sanitise text for a Mermaid sequenceDiagram message (single line)."""
     t = " ".join((text or "").split())
@@ -323,6 +327,9 @@ def render_credits(report: AnalysisReport) -> str:
         f"**Estimated total: {est.total_credits:g} Copilot Credits**",
         "",
     ]
+    if est.reasoning_model:
+        out.append(f"> Reasoning model — premium token meter applies (≈{est.total_tokens} tokens estimated).")
+        out.append("")
     if est.by_kind:
         out.append(
             "- " + "  |  ".join(f"**{k.replace('_', ' ')}:** {v:g}" for k, v in sorted(est.by_kind.items()))
@@ -331,85 +338,247 @@ def render_credits(report: AnalysisReport) -> str:
     out += ["| Step | Kind | Credits | Detail |", "| --- | --- | --- | --- |"]
     for it in est.line_items:
         out.append(f"| {_cell(it.label)} | {_cell(it.kind.replace('_', ' '))} | {it.credits:g} | {_cell(it.detail)} |")
+    if est.assumptions:
+        out += ["", "**Assumptions:**"]
+        out += [f"- {_cell(a)}" for a in est.assumptions]
     if est.notes:
         out += ["", "> " + "  \n> ".join(_cell(n) for n in est.notes)]
     return "\n".join(out)
 
 
+def render_sandbox(report: AnalysisReport) -> str:
+    ci = report.code_interpreter
+    if ci is None or not ci.used:
+        return ""
+    out = [
+        "## Sandbox & code interpreter",
+        "",
+        f"Code-interpreter activity detected in **{ci.turns_with_code} turn(s)**"
+        + (f"; tools observed: {', '.join(ci.distinct_tools)}." if ci.distinct_tools else "."),
+        "",
+    ]
+    if ci.authoring_turns or ci.analysis_turns:
+        auth = ", ".join(str(t) for t in ci.authoring_turns) or "—"
+        anal = ", ".join(str(t) for t in ci.analysis_turns) or "—"
+        out += [
+            f"- Authoring (generated files): turn **{auth}**",
+            f"- Analysis (read documents): turn **{anal}**",
+            "",
+        ]
+    if ci.skill_gaps:
+        out += ["**Skill gaps → code fallback:**"]
+        for g in ci.skill_gaps:
+            wanted = f"wanted `{_cell(g.wanted)}`" if g.wanted else "no matching skill"
+            fb = f" → fell back to {_cell(g.fallback)}" if g.fallback else " → fell back to raw code"
+            out.append(f"- Turn {g.turn_index}: {wanted}{fb} — {_cell(g.excerpt)}")
+        out.append("")
+    if ci.skills:
+        out += ["**Skills used:**"]
+        for s in ci.skills:
+            label = "document processing" if s.category == "document-processing" else "skill"
+            turn = f" (turn {s.turn_index})" if s.turn_index is not None else ""
+            out.append(f"- `{_cell(s.name)}` — {label}{turn}")
+        out.append("")
+    if ci.friction:
+        out += [f"**Sandbox friction ({ci.friction_count}):**"]
+        for f in ci.friction:
+            tag = "recovered" if f.recovered else "unresolved"
+            out.append(f"- Turn {f.turn_index} — {_cell(f.kind)} ({tag}): {_cell(f.excerpt)}")
+        out.append("")
+    if ci.signals:
+        out += ["| Turn | Activity | Tool | Evidence |", "| --- | --- | --- | --- |"]
+        for s in ci.signals:
+            out.append(f"| {s.turn_index} | {_cell(s.category)} | {_cell(s.tool)} | {_cell(s.excerpt)} |")
+    return "\n".join(out)
+
+
+def render_retrieval_depth(report: AnalysisReport) -> str:
+    rd = report.retrieval_depth
+    if rd is None or not (rd.folders or rd.doc_retrievals):
+        return ""
+    out = [
+        "## Retrieval depth",
+        "",
+        f"- Retrieval mode: **{rd.retrieval_mode}**",
+        f"- Unique documents: **{rd.unique_docs}** (from {rd.total_retrieved} retrievals; "
+        f"{rd.overlap_docs} returned by more than one search)",
+        f"- Cited: **{rd.cited_docs}** of {rd.unique_docs} — over-retrieval "
+        f"{int(rd.over_retrieval_ratio * 100)}%",
+        f"- Full-document sandbox reads: **{rd.full_doc_reads}**",
+        "",
+    ]
+    if rd.folders:
+        out += ["**Document taxonomy (SharePoint folders):**", "", "| Folder | Docs |", "| --- | --- |"]
+        for f in rd.folders:
+            out.append(f"| {_cell(f.path)} | {f.count} |")
+        out.append("")
+    if rd.doc_retrievals:
+        out += ["**Most-retrieved documents:**", "", "| Document | Retrievals | Turns | Cited |", "| --- | --- | --- | --- |"]
+        for d in rd.doc_retrievals:
+            turns = ", ".join(str(t) for t in d.turns)
+            out.append(f"| {_cell(d.title)} | {d.retrieval_count} | {_cell(turns)} | {'yes' if d.cited else 'no'} |")
+    return "\n".join(out)
+
+
+def render_search_strategy(report: AnalysisReport) -> str:
+    ss = report.search_strategy
+    if ss is None or not (ss.searches or ss.recall_turns):
+        return ""
+    out = [
+        "## Search strategy",
+        "",
+        f"- Productive searches: **{ss.productive_searches}**  |  Unproductive: **{ss.unproductive_searches}**",
+        f"- Turns answered from earlier retrieval (no new search): **{len(ss.recall_turns)}**",
+        "",
+    ]
+    if ss.searches:
+        out += ["| Turn | Query | Retrieved | Cited | Productive |", "| --- | --- | --- | --- | --- |"]
+        for s in ss.searches:
+            out.append(
+                f"| {s.turn_index} | {_cell(s.query)} | {s.retrieved} | {s.cited_from_search} | "
+                f"{'yes' if s.productive else 'no'} |"
+            )
+        out.append("")
+    if ss.recall_turns:
+        out += ["**Answered from earlier retrieval:**"]
+        for t in ss.recall_turns:
+            out.append(f"- Turn {t.turn_index}: {_cell(t.excerpt)}")
+    return "\n".join(out)
+
+
+def render_generated_artifacts(report: AnalysisReport) -> str:
+    ga = report.generated_artifacts
+    if ga is None or not ga.items:
+        return ""
+    kinds = ", ".join(f"{v}× {k}" for k, v in ga.by_type.items())
+    out = [
+        "## Generated outputs",
+        "",
+        f"The agent produced **{ga.count} downloadable file(s)** ({kinds}). Verify each is grounded in the "
+        "cited sources.",
+        "",
+        "| File | Type | Produced with | Turn |",
+        "| --- | --- | --- | --- |",
+    ]
+    for it in ga.items:
+        turn = str(it.turn_index) if it.turn_index is not None else "—"
+        out.append(f"| {_cell(it.name)} | {_cell(it.file_type)} | {_cell(it.how_made)} | {turn} |")
+    return "\n".join(out)
+
+
+def render_grounding_pipeline(report: AnalysisReport) -> str:
+    gp = report.grounding_pipeline
+    if gp is None or not gp.docs:
+        return ""
+    out = [
+        "## Grounding pipeline",
+        "",
+        f"- Snippet mode: **{gp.snippet_mode}** ({gp.stub_results} download stub(s), "
+        f"{gp.content_results} with inline text)",
+        f"- Citation precision: **{gp.span_visibility}**",
+        "",
+    ]
+    for n in gp.notes:
+        out.append(f"> {_cell(n)}")
+    if gp.notes:
+        out.append("")
+    out += ["| Document | Searched | Downloaded | Preprocessed | Read | Cited |", "| --- | --- | --- | --- | --- | --- |"]
+    for d in gp.docs:
+        out.append(
+            f"| {_cell(d.title)} | {_yn(d.searched)} | {_yn(d.downloaded)} | {_yn(d.preprocessed)} | "
+            f"{_yn(d.read_full)} | {_yn(d.cited)} |"
+        )
+    return "\n".join(out)
+
+
 def render_components(report: AnalysisReport, convo: Conversation | None = None) -> str:
-    from analysis import classify_tool_kind
+    from analysis import PROVIDER_META, build_tool_hierarchy
     from explainer import explain
 
     p = report.agent
-    rows: list[tuple[str, str, str, str, str]] = []  # category, label, value, summary, doc
+    out: list[str] = []
 
-    def add(category: str, label: str, value: str, key: str, kvalue: str | None = None) -> None:
+    def line(label: str, value: str, key: str, kvalue: str | None = None) -> None:
         ex = explain(key, kvalue)
-        rows.append((category, label, value, ex.summary, ex.doc or ""))
+        ref = f" ([Learn]({ex.doc}))" if ex.doc else ""
+        val = f" — `{value}`" if value else ""
+        out.append(f"- **{label}**{val} — {ex.summary}{ref}")
 
     if p is not None:
+        agent_rows: list[tuple[str, str, str, str | None]] = []
         if p.model_label or p.model_series:
-            add("Agent settings", "Model", p.model_label or p.model_series or "", "model")
+            agent_rows.append(("Model", p.model_label or p.model_series or "", "model", None))
         if p.is_modern:
-            add("Agent settings", "Orchestration", "Generative orchestration", "orchestration")
+            agent_rows.append(("Orchestration", "Generative orchestration", "orchestration", None))
         if p.instructions:
-            add("Agent settings", "Instructions", f"{len(p.instruction_segments) or 1} segment(s)", "instructions")
+            agent_rows.append(("Instructions", f"{len(p.instruction_segments) or 1} segment(s)", "instructions", None))
         if p.authentication_mode:
-            add("Agent settings", "Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode)
+            agent_rows.append(("Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode))
         if p.authentication_trigger:
-            add(
-                "Agent settings", "Authentication trigger", p.authentication_trigger,
-                "authenticationTrigger", p.authentication_trigger,
+            agent_rows.append(
+                ("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger)
             )
         if p.access_control_policy:
-            add("Agent settings", "Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy)
-        add("Agent settings", "Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory")
+            agent_rows.append(("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy))
+        agent_rows.append(("Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory", None))
         if p.conversation_starters:
-            add("Agent settings", "Conversation starters", f"{len(p.conversation_starters)} starter(s)", "conversationStarters")
-        if p.recognizer_kind:
-            add("Agent settings", "Recognizer", p.recognizer_kind, "recognizer")
-        if p.template:
-            add("Agent settings", "Template", p.template, "template")
-        if p.runtime_provider:
-            add("Agent settings", "Runtime provider", p.runtime_provider, "runtimeProvider")
-
-        for ks in p.knowledge_sources:
-            specific = f"knowledge.{ks.source_kind}" if ks.source_kind else "knowledge"
-            ex = explain(specific)
-            if not ex.documented:
-                ex = explain("knowledge")
-            rows.append(("Knowledge", ks.display_name or "(knowledge source)", ks.source_kind or "", ex.summary, ex.doc or ""))
-
-        for ev in p.environment_variables:
-            add(
-                "Environment variables",
-                ev.display_name or ev.schema_name or "(env var)",
-                ev.type or (ev.default_value or ""),
-                "environmentVariable",
+            agent_rows.append(
+                ("Conversation starters", f"{len(p.conversation_starters)} starter(s)", "conversationStarters", None)
             )
+        if p.recognizer_kind:
+            agent_rows.append(("Recognizer", p.recognizer_kind, "recognizer", None))
+        if p.template:
+            agent_rows.append(("Template", p.template, "template", None))
+        if p.runtime_provider:
+            agent_rows.append(("Runtime provider", p.runtime_provider, "runtimeProvider", None))
+        if agent_rows:
+            out.append("### Agent")
+            for label, value, key, kvalue in agent_rows:
+                line(label, value, key, kvalue)
+            out.append("")
 
-        for tc in p.tool_components:
-            add("Tools & actions", tc.display_name or tc.kind, tc.kind, "tool")
+        if p.knowledge_sources:
+            out.append("### Knowledge sources")
+            for ks in p.knowledge_sources:
+                specific = f"knowledge.{ks.source_kind}" if ks.source_kind else "knowledge"
+                ex = explain(specific)
+                if not ex.documented:
+                    ex = explain("knowledge")
+                ref = f" ([Learn]({ex.doc}))" if ex.doc else ""
+                kind = f" — `{ks.source_kind}`" if ks.source_kind else ""
+                out.append(f"- **{ks.display_name or '(knowledge source)'}**{kind} — {ex.summary}{ref}")
+            out.append("")
 
-    defined = {(tc.display_name or "").lower() for tc in (p.tool_components if p else [])}
-    seen: set[str] = set()
-    if convo is not None:
-        for tcall in convo.tool_calls:
-            if classify_tool_kind(tcall) not in {"action", "skill"}:
-                continue
-            label = tcall.display_name or tcall.name or "action"
-            if label.lower() in defined or label.lower() in seen:
-                continue
-            seen.add(label.lower())
-            add("Tools & actions", label, "observed at runtime", "tool")
+    providers = build_tool_hierarchy(p, convo)
+    if providers:
+        out.append("### Tools")
+        for pr in providers:
+            badge, _icon, kbkey = PROVIDER_META.get(pr.kind, ("Tool", "wrench", "tool"))
+            pex = explain(kbkey)
+            ref = f" ([Learn]({pex.doc}))" if pex.doc else ""
+            origin = "declared in agent" if pr.configured else "observed at runtime"
+            src = f" · {pr.source}" if pr.source else ""
+            out.append(
+                f"- **{badge}: {pr.display_name}** "
+                f"({len(pr.operations)} operation(s), {origin}{src}) — {pex.summary}{ref}"
+            )
+            for op in pr.operations:
+                olabel = op.display_name or op.name
+                desc = f" — {op.description}" if op.description else ""
+                out.append(f"  - `{olabel}`{desc}")
+        out.append("")
 
-    if not rows:
+    if p is not None and p.environment_variables:
+        out.append("### Environment variables")
+        for ev in p.environment_variables:
+            label = ev.display_name or ev.schema_name or "(env var)"
+            value = ev.type or (ev.default_value or "")
+            line(label, value, "environmentVariable")
+        out.append("")
+
+    if not out:
         return ""
-    out = ["## Components", "", "| Category | Component | Value | Explanation | Reference |", "| --- | --- | --- | --- | --- |"]
-    for category, label, value, summary, doc in rows:
-        ref = f"[Learn]({doc})" if doc else "—"
-        out.append(f"| {_cell(category)} | {_cell(label)} | {_cell(value)} | {_cell(summary)} | {ref} |")
-    return "\n".join(out)
+    return "## Components\n\n" + "\n".join(out).rstrip()
 
 
 def render_conversation_flow(convo: Conversation | None, agent_name: str = "Agent") -> str:
@@ -454,6 +623,195 @@ def render_chat(convo: Conversation | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def render_turn_economy(report: AnalysisReport) -> str:
+    eco = report.turn_economy
+    if eco is None or eco.turns == 0:
+        return ""
+    return "\n".join(
+        [
+            "## Turn economy",
+            "",
+            f"- **User turns:** {eco.user_turns}",
+            f"- **Tool calls:** {eco.tool_calls}  |  **Calls per answer:** {eco.calls_per_answer:g}",
+            f"- **Searches to first answer:** {eco.searches_to_first_answer}",
+            f"- **Avg bot messages per turn:** {eco.avg_bot_msgs_per_turn:g}",
+        ]
+    )
+
+
+def render_tool_failures(report: AnalysisReport) -> str:
+    tf = report.tool_failures
+    if tf is None or not tf.failures:
+        return ""
+    label = {
+        "recovered-other-tool": "recovered via other tool",
+        "retried-same": "retried same tool",
+        "unhandled-but-answered": "answered without recovery",
+        "gave-up": "gave up",
+    }
+    out = [
+        "## Failed tools & recovery",
+        "",
+        f"- **Failures:** {tf.total_failures}  |  **Hidden behind a 'completed' status:** {tf.embedded_failures}  "
+        f"|  **Recovered:** {tf.recovered}  |  **Gave up:** {tf.gave_up}",
+        "",
+        "| Turn | Tool | Error | Recovery | Next action |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for f in tf.failures:
+        out.append(
+            f"| {f.turn_index} | {_cell(f.name)} | {_cell(f.error_text)} "
+            f"| {label.get(f.recovery, f.recovery)} | {_cell(f.next_action)} |"
+        )
+    return "\n".join(out)
+
+
+def render_tool_efficiency(report: AnalysisReport) -> str:
+    eff = report.tool_efficiency
+    if eff is None or eff.total_calls == 0:
+        return ""
+    out = [
+        "## Tool-call efficiency",
+        "",
+        f"- **Total calls:** {eff.total_calls}  |  **Unique:** {eff.unique_calls}  "
+        f"|  **Redundant:** {eff.redundant_calls}  |  **Calls per answer:** {eff.calls_per_answer:g}",
+    ]
+    if eff.duplicate_groups:
+        out += ["", "| Tool | Repeats | Turns | Parameters |", "| --- | --- | --- | --- |"]
+        for d in eff.duplicate_groups:
+            turns = ", ".join(str(t) for t in d.turns)
+            out.append(f"| {_cell(d.name)} | {d.count}× | {turns} | {_cell(d.params_summary)} |")
+    else:
+        out += ["", "_No redundant tool calls — every call used distinct parameters._"]
+    return "\n".join(out)
+
+
+def render_repetition(report: AnalysisReport) -> str:
+    rep = report.repetition
+    if rep is None or not rep.signals:
+        return ""
+    label = {"agent-answer": "Repeated answer", "agent-tool": "Tool loop", "user-question": "Repeated question"}
+    out = [
+        "## Repetition & loops",
+        "",
+        "| Kind | Turns | Similarity | Excerpt |",
+        "| --- | --- | --- | --- |",
+    ]
+    for s in rep.signals:
+        turns = ", ".join(str(t) for t in s.turns)
+        out.append(
+            f"| {label.get(s.kind, s.kind)} | {turns} | {int(round(s.similarity * 100))}% | {_cell(s.excerpt)} |"
+        )
+    return "\n".join(out)
+
+
+def render_answer_grounding(report: AnalysisReport) -> str:
+    ag = report.answer_groundedness
+    if ag is None or not ag.answers:
+        return ""
+    rank = {"high": 0, "medium": 1, "low": 2}
+    badge = {"high": "🔴 high", "medium": "🟠 medium", "low": "🟢 low"}
+    out = [
+        "## Per-answer groundedness",
+        "",
+        f"- **High risk:** {ag.high_risk}  |  **Medium:** {ag.medium_risk}  |  **Low:** {ag.low_risk}",
+        "",
+        "> High = factual claims with no citation despite a search returning documents. A heuristic signal, not a verdict.",
+        "",
+        "| Turn | Risk | Factual claims | Cited | Had retrieval |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for a in sorted(ag.answers, key=lambda a: rank.get(a.risk, 3)):
+        out.append(
+            f"| {a.turn_index} | {badge.get(a.risk, a.risk)} | {a.factual_claims} | {a.cited_claims} "
+            f"| {'yes' if a.had_retrieval else 'no'} |"
+        )
+    return "\n".join(out)
+
+
+def render_quote_traceability(report: AnalysisReport) -> str:
+    qf = report.quote_faithfulness
+    if qf is None or not qf.quotes:
+        return ""
+    rank = {"unattributed-quote": 0, "dangling-attribution": 1, "attributed-source-in-sandbox": 2, "verified-in-tool-output": 3}
+    label = {
+        "verified-in-tool-output": "✅ verified in tool output",
+        "attributed-source-in-sandbox": "🔵 attributed — source in sandbox",
+        "dangling-attribution": "❌ dangling attribution",
+        "unattributed-quote": "🟠 unattributed quote",
+    }
+    out = [
+        "## Quote traceability",
+        "",
+        f"- **Verified:** {qf.verified}  |  **In sandbox:** {qf.attributed}  "
+        f"|  **Dangling:** {qf.dangling}  |  **Unattributed:** {qf.unattributed}",
+        "",
+        "> Modern RAG reads documents in a sandbox, so cited source text rarely reaches the transcript. "
+        "'In sandbox' means the quote is attributed to a retrieved doc whose full text isn't transcript-verifiable.",
+        "",
+        "| Turn | Verdict | Source | Quote |",
+        "| --- | --- | --- | --- |",
+    ]
+    for q in sorted(qf.quotes, key=lambda q: rank.get(q.verdict, 4)):
+        out.append(
+            f"| {q.turn_index} | {label.get(q.verdict, q.verdict)} | {_cell(q.source_title)} | {_cell(q.excerpt)} |"
+        )
+    return "\n".join(out)
+
+
+def render_coverage_gaps(report: AnalysisReport) -> str:
+    cg = report.coverage_gaps
+    if cg is None or not cg.gaps:
+        return ""
+    label = {
+        "zero-result-search": "🔴 zero-result search",
+        "acknowledged-gap": "🟠 acknowledged gap",
+        "uncited-answer": "🟠 uncited answer",
+    }
+    out = [
+        "## Knowledge coverage gaps",
+        "",
+        "| Turn | Reason | User question | Query |",
+        "| --- | --- | --- | --- |",
+    ]
+    for g in cg.gaps:
+        out.append(
+            f"| {g.turn_index} | {label.get(g.reason, g.reason)} | {_cell(g.user_question)} | {_cell(g.query)} |"
+        )
+    return "\n".join(out)
+
+
+def render_timeline(convo: Conversation | None) -> str:
+    if convo is None or not convo.turns:
+        return ""
+    from analysis import classify_tool_kind, tool_failed
+
+    out = [
+        "## Conversation timeline",
+        "",
+        "_Sequence of events per turn (no timestamps in modern transcripts — ordering only)._",
+    ]
+    for turn in convo.turns:
+        title = "Greeting" if turn.user_message is None else f"Turn {turn.index}"
+        out += ["", f"### {title}"]
+        if turn.user_message is not None and turn.user_message.text.strip():
+            out.append(f"- 👤 **User:** {_cell(_seq(turn.user_message.text, 120))}")
+        for m in turn.bot_messages:
+            for th in m.thoughts:
+                if th.text.strip():
+                    out.append(f"- 💭 **Thought:** {_cell(_seq(th.text, 120))}")
+            for tc in m.tool_calls:
+                mark = "❌" if tool_failed(tc) else "•"
+                kind = classify_tool_kind(tc)
+                name = tc.display_name or tc.name or "tool"
+                detail = tc.query or ""
+                suffix = f" — {_cell(_seq(detail, 80))}" if detail else ""
+                out.append(f"- {mark} **{_cell(name)}** _({kind})_{suffix}")
+            if m.text.strip():
+                out.append(f"- 🤖 **Agent:** {_cell(_seq(m.text, 140))}")
+    return "\n".join(out)
+
+
 def render_markdown(report: AnalysisReport, convo: Conversation | None = None, title: str | None = None) -> str:
     name = report.agent.display_name if report.agent else "Modern agent"
     heading = title or f"Agent analysis — {name}"
@@ -463,12 +821,25 @@ def render_markdown(report: AnalysisReport, convo: Conversation | None = None, t
         render_findings(report),
         render_agent_profile(report),
         render_overview(report),
+        render_turn_economy(report),
         render_conversation_flow(convo, name),
+        render_timeline(convo),
         render_tools(report),
+        render_tool_failures(report),
+        render_tool_efficiency(report),
+        render_generated_artifacts(report),
         render_knowledge(report),
         render_knowledge_effectiveness(report),
+        render_search_strategy(report),
+        render_retrieval_depth(report),
+        render_grounding_pipeline(report),
+        render_coverage_gaps(report),
         render_reasoning(report),
+        render_sandbox(report),
         render_quality(report),
+        render_answer_grounding(report),
+        render_quote_traceability(report),
+        render_repetition(report),
         render_citation_audit(report),
         render_credits(report),
         render_instructions(report),
@@ -484,15 +855,28 @@ def build_sections(report: AnalysisReport, convo: Conversation | None = None) ->
     return {
         "findings": render_findings(report),
         "overview": render_overview(report),
+        "turn_economy": render_turn_economy(report),
         "profile": render_agent_profile(report),
         "cross_reference": render_cross_reference(report),
         "flow": render_conversation_flow(convo, name),
+        "timeline": render_timeline(convo),
         "chat": render_chat(convo),
         "tools": render_tools(report),
+        "tool_failures": render_tool_failures(report),
+        "tool_efficiency": render_tool_efficiency(report),
+        "generated_artifacts": render_generated_artifacts(report),
         "knowledge": render_knowledge(report),
         "knowledge_effectiveness": render_knowledge_effectiveness(report),
+        "search_strategy": render_search_strategy(report),
+        "retrieval_depth": render_retrieval_depth(report),
+        "grounding_pipeline": render_grounding_pipeline(report),
+        "coverage_gaps": render_coverage_gaps(report),
         "reasoning": render_reasoning(report),
+        "sandbox": render_sandbox(report),
         "quality": render_quality(report),
+        "answer_grounding": render_answer_grounding(report),
+        "quote_traceability": render_quote_traceability(report),
+        "repetition": render_repetition(report),
         "citation_audit": render_citation_audit(report),
         "credits": render_credits(report),
         "instructions": render_instructions(report),

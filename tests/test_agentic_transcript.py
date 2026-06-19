@@ -51,5 +51,11 @@ def test_analysis_without_agent_yaml(convo):
     assert report.agent is None
     assert report.overview is not None
     assert report.overview.tool_call_count == 5
-    # No tool failures by status (all completed), even though one is narrated as failing.
-    assert report.overview.failed_tool_count == 0
+    # Two SendMessageToUser calls report status "completed" but embed an
+    # "Error executing tool" message — semantic failure detection (#10) counts them.
+    assert report.overview.failed_tool_count == 2
+    assert report.tool_failures is not None
+    assert report.tool_failures.total_failures == 2
+    assert report.tool_failures.embedded_failures == 2
+    # At least one failure was recovered via a different tool (SendMessageToSelf).
+    assert report.tool_failures.recovered >= 1

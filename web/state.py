@@ -11,18 +11,36 @@ from models import AgentProfile, Conversation
 from renderer import build_standalone_html, render_markdown
 from transcript_parser import parse_transcript_text
 from web.view_models import (
+    AnswerGroundingVM,
     ChatBlockVM,
     CheckVM,
     CitationRowVM,
+    ComponentNodeVM,
     ComponentVM,
+    CoverageGapVM,
     CreditKindVM,
     CreditLineVM,
+    DocRetrievalVM,
     DocVM,
+    DuplicateGroupVM,
     EnvVarVM,
     FindingVM,
+    FolderVM,
+    GeneratedArtifactVM,
+    GroundingDocVM,
     KnowledgeQueryVM,
     KSourceVM,
+    QuoteCheckVM,
+    RecallTurnVM,
+    RepetitionVM,
+    SandboxFrictionVM,
+    SandboxSignalVM,
+    SearchPrecisionVM,
+    SkillGapVM,
+    SkillUseVM,
     SourceEffVM,
+    TimelineTurnVM,
+    ToolFailureVM,
     ToolRowVM,
     TurnVM,
     map_report,
@@ -34,8 +52,10 @@ TAB_DEFS: list[tuple[str, str]] = [
     ("agent", "Agent"),
     ("conversation", "Conversation"),
     ("tools", "Tools & Actions"),
+    ("knowledge", "Knowledge"),
     ("reasoning", "Reasoning"),
     ("quality", "Quality"),
+    ("timeline", "Timeline"),
     ("components", "Components"),
 ]
 
@@ -125,9 +145,116 @@ class State(rx.State):
     credit_total: str = "0"
     credit_notes: list[str] = []
     has_credits: bool = False
+    credit_reasoning_model: bool = False
+    credit_total_tokens: int = 0
+    credit_assumptions: list[str] = []
+    credit_estimator_url: str = ""
 
-    # Component explorer (#8)
+    # Code interpreter / sandbox (D1–D3)
+    sandbox_used: bool = False
+    sandbox_turns: int = 0
+    sandbox_tools_label: str = "—"
+    sandbox_signals: list[SandboxSignalVM] = []
+    sandbox_friction: list[SandboxFrictionVM] = []
+    sandbox_friction_count: int = 0
+    sandbox_skills: list[SkillUseVM] = []
+    sandbox_doc_skills: int = 0
+
+    # Retrieval depth (B1–B4)
+    rd_folders: list[FolderVM] = []
+    rd_docs: list[DocRetrievalVM] = []
+    rd_unique_docs: int = 0
+    rd_total_retrieved: int = 0
+    rd_overlap_docs: int = 0
+    rd_cited_docs: int = 0
+    rd_over_retrieval_label: str = "0%"
+    rd_over_retrieval_pct: int = 0
+    rd_mode: str = "inline"
+    rd_full_reads: int = 0
+    has_retrieval_depth: bool = False
+
+    # Search strategy (A1–A2)
+    search_precision: list[SearchPrecisionVM] = []
+    recall_turns: list[RecallTurnVM] = []
+    ss_productive: int = 0
+    ss_unproductive: int = 0
+    has_search_strategy: bool = False
+
+    # Generated artifacts (G1)
+    artifacts: list[GeneratedArtifactVM] = []
+    artifact_count: int = 0
+    artifact_types_label: str = ""
+    has_artifacts: bool = False
+
+    # Code-interpreter purpose split (G2)
+    sandbox_authoring_label: str = "—"
+    sandbox_analysis_label: str = "—"
+    sandbox_authoring_count: int = 0
+    sandbox_analysis_count: int = 0
+
+    # Skill gaps (G3)
+    skill_gaps: list[SkillGapVM] = []
+    has_skill_gaps: bool = False
+
+    # Grounding pipeline (G4)
+    grounding_docs: list[GroundingDocVM] = []
+    gp_snippet_mode_label: str = ""
+    gp_snippet_mode_icon: str = "circle-help"
+    gp_snippet_mode_color: str = "gray"
+    gp_span_label: str = ""
+    gp_span_icon: str = "circle-help"
+    gp_span_color: str = "gray"
+    gp_stub_results: int = 0
+    gp_content_results: int = 0
+    gp_notes: list[str] = []
+    has_grounding_pipeline: bool = False
+
+    # Component explorer (#8) — hierarchical
     components: list[ComponentVM] = []
+    component_nodes: list[ComponentNodeVM] = []
+    collapsed_nodes: list[str] = []
+
+    # Failed-tool & recovery (#10)
+    tool_failure_rows: list[ToolFailureVM] = []
+    tf_total: int = 0
+    tf_embedded: int = 0
+    tf_recovered: int = 0
+    tf_gaveup: int = 0
+
+    # Tool efficiency (#6)
+    duplicate_groups: list[DuplicateGroupVM] = []
+    eff_total_calls: int = 0
+    eff_unique_calls: int = 0
+    eff_redundant: int = 0
+    eff_calls_per_answer: str = "0"
+
+    # Repetition / loops (#5)
+    repetition: list[RepetitionVM] = []
+
+    # Per-answer groundedness (#2)
+    answer_grounding: list[AnswerGroundingVM] = []
+    ag_high: int = 0
+    ag_medium: int = 0
+    ag_low: int = 0
+
+    # Quote traceability (#11)
+    quote_rows: list[QuoteCheckVM] = []
+    qf_verified: int = 0
+    qf_attributed: int = 0
+    qf_dangling: int = 0
+    qf_unattributed: int = 0
+
+    # Coverage gaps (#12)
+    coverage_gaps: list[CoverageGapVM] = []
+
+    # Turn economy (#16)
+    te_calls_per_answer: str = "0"
+    te_searches_to_first: int = 0
+    te_avg_bot_msgs: str = "0"
+    te_user_turns: int = 0
+
+    # Timeline (#8 view)
+    timeline: list[TimelineTurnVM] = []
 
     # Reasoning
     premise_corrections: list[str] = []
@@ -204,26 +331,49 @@ class State(rx.State):
         return self.grounded + self.ungrounded
 
     @rx.var
-    def filtered_components(self) -> list[ComponentVM]:
+    def visible_nodes(self) -> list[ComponentNodeVM]:
+        """Tree nodes to render: search-filtered (keeping ancestors) when a query
+        is present, else hiding nodes beneath a collapsed branch."""
+        nodes = self.component_nodes
+        by_id = {n.id: n for n in nodes}
         q = self.component_query.strip().lower()
-        if not q:
-            return self.components
-        return [c for c in self.components if q in c.search_text]
+        if q:
+            keep: set[str] = set()
+            for n in nodes:
+                if q in n.search_text:
+                    keep.add(n.id)
+                    pid = n.parent_id
+                    while pid and pid in by_id:
+                        keep.add(pid)
+                        pid = by_id[pid].parent_id
+            return [n for n in nodes if n.id in keep]
+        collapsed = set(self.collapsed_nodes)
+        out: list[ComponentNodeVM] = []
+        for n in nodes:
+            hidden = False
+            pid = n.parent_id
+            while pid and pid in by_id:
+                if pid in collapsed:
+                    hidden = True
+                    break
+                pid = by_id[pid].parent_id
+            if not hidden:
+                out.append(n)
+        return out
 
     @rx.var
     def component_count(self) -> int:
-        return len(self.filtered_components)
+        return len([n for n in self.component_nodes if n.node_type != "group"])
 
     @rx.var
-    def selected_component(self) -> ComponentVM:
-        comps = self.components
-        if not comps:
-            return ComponentVM()
-        for c in comps:
-            if c.id == self.active_component:
-                return c
-        fc = self.filtered_components
-        return fc[0] if fc else comps[0]
+    def selected_component(self) -> ComponentNodeVM:
+        selectable = [n for n in self.component_nodes if n.selectable]
+        if not selectable:
+            return ComponentNodeVM()
+        for n in selectable:
+            if n.id == self.active_component:
+                return n
+        return selectable[0]
 
     # ------------------------------------------------------------------
     # UI setters
@@ -254,6 +404,20 @@ class State(rx.State):
 
     def clear_component_query(self):
         self.component_query = ""
+
+    def on_node_click(self, nid: str):
+        """Group/provider rows toggle collapse; providers and leaves also select
+        for the detail pane."""
+        node = next((n for n in self.component_nodes if n.id == nid), None)
+        if node is None:
+            return
+        if node.is_branch:
+            if nid in self.collapsed_nodes:
+                self.collapsed_nodes = [x for x in self.collapsed_nodes if x != nid]
+            else:
+                self.collapsed_nodes = self.collapsed_nodes + [nid]
+        if node.selectable:
+            self.active_component = nid
 
     def select_component(self, cid: str):
         self.active_component = cid
@@ -400,8 +564,93 @@ class State(rx.State):
         self.credit_total = vm.credit_total
         self.credit_notes = vm.credit_notes
         self.has_credits = vm.has_credits
+        self.credit_reasoning_model = vm.credit_reasoning_model
+        self.credit_total_tokens = vm.credit_total_tokens
+        self.credit_assumptions = vm.credit_assumptions
+        self.credit_estimator_url = vm.credit_estimator_url
+
+        self.sandbox_used = vm.sandbox_used
+        self.sandbox_turns = vm.sandbox_turns
+        self.sandbox_tools_label = vm.sandbox_tools_label
+        self.sandbox_signals = vm.sandbox_signals
+        self.sandbox_friction = vm.sandbox_friction
+        self.sandbox_friction_count = vm.sandbox_friction_count
+        self.sandbox_skills = vm.sandbox_skills
+        self.sandbox_doc_skills = vm.sandbox_doc_skills
+
+        self.rd_folders = vm.rd_folders
+        self.rd_docs = vm.rd_docs
+        self.rd_unique_docs = vm.rd_unique_docs
+        self.rd_total_retrieved = vm.rd_total_retrieved
+        self.rd_overlap_docs = vm.rd_overlap_docs
+        self.rd_cited_docs = vm.rd_cited_docs
+        self.rd_over_retrieval_label = vm.rd_over_retrieval_label
+        self.rd_over_retrieval_pct = vm.rd_over_retrieval_pct
+        self.rd_mode = vm.rd_mode
+        self.rd_full_reads = vm.rd_full_reads
+        self.has_retrieval_depth = vm.has_retrieval_depth
+
+        self.search_precision = vm.search_precision
+        self.recall_turns = vm.recall_turns
+        self.ss_productive = vm.ss_productive
+        self.ss_unproductive = vm.ss_unproductive
+        self.has_search_strategy = vm.has_search_strategy
+
+        self.artifacts = vm.artifacts
+        self.artifact_count = vm.artifact_count
+        self.artifact_types_label = vm.artifact_types_label
+        self.has_artifacts = vm.has_artifacts
+
+        self.sandbox_authoring_label = vm.sandbox_authoring_label
+        self.sandbox_analysis_label = vm.sandbox_analysis_label
+        self.sandbox_authoring_count = len(vm.sandbox_authoring_turns)
+        self.sandbox_analysis_count = len(vm.sandbox_analysis_turns)
+
+        self.skill_gaps = vm.skill_gaps
+        self.has_skill_gaps = vm.has_skill_gaps
+
+        self.grounding_docs = vm.grounding_docs
+        self.gp_snippet_mode_label = vm.gp_snippet_mode_label
+        self.gp_snippet_mode_icon = vm.gp_snippet_mode_icon
+        self.gp_snippet_mode_color = vm.gp_snippet_mode_color
+        self.gp_span_label = vm.gp_span_label
+        self.gp_span_icon = vm.gp_span_icon
+        self.gp_span_color = vm.gp_span_color
+        self.gp_stub_results = vm.gp_stub_results
+        self.gp_content_results = vm.gp_content_results
+        self.gp_notes = vm.gp_notes
+        self.has_grounding_pipeline = vm.has_grounding_pipeline
 
         self.components = vm.components
+        self.component_nodes = vm.component_nodes
+        self.collapsed_nodes = []
+
+        self.tool_failure_rows = vm.tool_failure_rows
+        self.tf_total, self.tf_embedded = vm.tf_total, vm.tf_embedded
+        self.tf_recovered, self.tf_gaveup = vm.tf_recovered, vm.tf_gaveup
+
+        self.duplicate_groups = vm.duplicate_groups
+        self.eff_total_calls, self.eff_unique_calls = vm.eff_total_calls, vm.eff_unique_calls
+        self.eff_redundant = vm.eff_redundant
+        self.eff_calls_per_answer = vm.eff_calls_per_answer
+
+        self.repetition = vm.repetition
+
+        self.answer_grounding = vm.answer_grounding
+        self.ag_high, self.ag_medium, self.ag_low = vm.ag_high, vm.ag_medium, vm.ag_low
+
+        self.quote_rows = vm.quote_rows
+        self.qf_verified, self.qf_attributed = vm.qf_verified, vm.qf_attributed
+        self.qf_dangling, self.qf_unattributed = vm.qf_dangling, vm.qf_unattributed
+
+        self.coverage_gaps = vm.coverage_gaps
+
+        self.te_calls_per_answer = vm.te_calls_per_answer
+        self.te_searches_to_first = vm.te_searches_to_first
+        self.te_avg_bot_msgs = vm.te_avg_bot_msgs
+        self.te_user_turns = vm.te_user_turns
+
+        self.timeline = vm.timeline
 
         self.premise_corrections = vm.premise_corrections
         self.thoughts_per_turn = vm.thoughts_per_turn
@@ -427,7 +676,9 @@ class State(rx.State):
     # ------------------------------------------------------------------
     def load_sample(self, kind: str = "knowledge"):
         """Load a bundled sample. `knowledge` = agent YAML + transcript;
-        `agentic` = transcript only (autonomous Teams agent)."""
+        `agentic` = transcript only (autonomous Teams agent);
+        `sandbox` = HR agent that uses the code interpreter + reasoning model;
+        `deck` = HR agent that generates a PowerPoint (artifacts + skill gap + grounding pipeline)."""
         self.error = ""
         self.agent_text = self.agent_name = ""
         try:
@@ -435,6 +686,20 @@ class State(rx.State):
                 with open("samples/sample_transcript_agentic.json", encoding="utf-8") as fh:
                     self.transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_agentic.json"
+            elif kind == "sandbox":
+                with open("samples/sample_agent_sandbox.yaml", encoding="utf-8") as fh:
+                    self.agent_text = fh.read()
+                    self.agent_name = "sample_agent_sandbox.yaml"
+                with open("samples/sample_transcript_sandbox.json", encoding="utf-8") as fh:
+                    self.transcript_text = fh.read()
+                    self.transcript_name = "sample_transcript_sandbox.json"
+            elif kind == "deck":
+                with open("samples/sample_agent_sandbox.yaml", encoding="utf-8") as fh:
+                    self.agent_text = fh.read()
+                    self.agent_name = "sample_agent_sandbox.yaml"
+                with open("samples/sample_transcript_deck.json", encoding="utf-8") as fh:
+                    self.transcript_text = fh.read()
+                    self.transcript_name = "sample_transcript_deck.json"
             else:
                 with open("samples/sample_agent.yaml", encoding="utf-8") as fh:
                     self.agent_text = fh.read()
@@ -482,6 +747,7 @@ class State(rx.State):
         self.raw_open = False
         self.component_query = ""
         self.active_component = ""
+        self.collapsed_nodes = []
         return rx.clear_selected_files("upload")
 
 

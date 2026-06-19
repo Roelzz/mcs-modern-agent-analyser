@@ -1,0 +1,81 @@
+[
+  {
+    "role": "bot",
+    "id": "00000000-0000-0000-0000-0000000000a0",
+    "text": "Hi! I'm the Expense agent. I can create and submit expense reports for you."
+  },
+  {
+    "role": "user",
+    "id": "00000000-0000-0000-0000-0000000000a1",
+    "text": "File a 240 EUR taxi expense from my trip to Berlin."
+  },
+  {
+    "role": "bot",
+    "id": "00000000-0000-0000-0000-0000000000a2",
+    "text": "Let me check which expense categories are available first.",
+    "thoughts": [
+      { "text": "I should fetch the valid categories before creating the report so the category is correct." }
+    ],
+    "toolCalls": [
+      {
+        "id": "tc-1",
+        "name": "ZavaExpenseMCP:get_expense_categories",
+        "status": "completed",
+        "displayName": "Get expense categories",
+        "params": {},
+        "result": "Categories: Travel, Meals, Lodging, Transport, Other"
+      }
+    ]
+  },
+  {
+    "role": "bot",
+    "id": "00000000-0000-0000-0000-0000000000a3",
+    "text": "I'll create the report under the Transport category and submit it for approval.",
+    "toolCalls": [
+      {
+        "id": "tc-2",
+        "name": "ZavaExpenseMCP:create_new_expense_report",
+        "status": "completed",
+        "displayName": "Create new expense report",
+        "params": { "content": "Taxi Berlin", "amount": "240", "currency": "EUR", "category": "Transport" },
+        "result": "Created draft expense report ER-10427."
+      },
+      {
+        "id": "tc-3",
+        "name": "ZavaExpenseMCP:submit_expense_report",
+        "status": "completed",
+        "displayName": "Submit expense report",
+        "params": { "reportid": "ER-10427" },
+        "result": "Expense report ER-10427 submitted."
+      },
+      {
+        "id": "tc-4",
+        "name": "SendMessageToUser",
+        "status": "completed",
+        "displayName": "SendMessageToUser",
+        "params": { "recipient": "user", "content": "Your expense report ER-10427 was submitted." },
+        "result": "ok"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "id": "00000000-0000-0000-0000-0000000000a4",
+    "text": "How many vacation days do I have left?"
+  },
+  {
+    "role": "bot",
+    "id": "00000000-0000-0000-0000-0000000000a5",
+    "text": "That's an HR question — let me hand that to the HR Assistant.",
+    "toolCalls": [
+      {
+        "id": "tc-5",
+        "name": "HR Assistant:answer_hr_question",
+        "status": "completed",
+        "displayName": "Answer HR question",
+        "params": { "content": "remaining vacation days" },
+        "result": "You have 12 vacation days remaining."
+      }
+    ]
+  }
+]

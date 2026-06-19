@@ -19,7 +19,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from models import Conversation, Message, RetrievedDoc, Thought, ToolCall, Turn
+from models import Conversation, FileAttachment, Message, RetrievedDoc, Thought, ToolCall, Turn
 
 _RESULT_COUNT_RE = re.compile(r"\[\s*(\d+)\s+results?\s*\]", re.IGNORECASE)
 _ZERO_RESULT_RE = re.compile(r"\b(no results|0 results|nothing found|no relevant)\b", re.IGNORECASE)
@@ -41,16 +41,20 @@ def parse_knowledge_result(text: str | None) -> tuple[list[RetrievedDoc], int | 
 
     docs: list[RetrievedDoc] = []
     current: dict[str, str | None] = {}
+    snippet_lines: list[str] = []
 
     def _flush() -> None:
         if current.get("title") or current.get("url") or current.get("reference_id"):
+            snippet = " ".join(snippet_lines).strip() or None
             docs.append(
                 RetrievedDoc(
                     title=current.get("title"),
                     url=current.get("url"),
                     reference_id=current.get("reference_id"),
+                    snippet=snippet,
                 )
             )
+        snippet_lines.clear()
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -61,6 +65,9 @@ def parse_knowledge_result(text: str | None) -> tuple[list[RetrievedDoc], int | 
             current["url"] = stripped[len("URL:") :].strip() or None
         elif stripped.startswith("ReferenceId:"):
             current["reference_id"] = stripped[len("ReferenceId:") :].strip() or None
+        elif current and stripped and stripped != "---":
+            # Body text that follows a doc's structural lines = its snippet summary.
+            snippet_lines.append(stripped)
     _flush()
 
     zero = False
@@ -101,6 +108,15 @@ def _parse_thought(raw: dict) -> Thought:
 def _parse_message(raw: dict) -> Message:
     tool_calls = [_parse_tool_call(tc) for tc in (raw.get("toolCalls") or []) if isinstance(tc, dict)]
     thoughts = [_parse_thought(t) for t in (raw.get("thoughts") or []) if isinstance(t, dict)]
+    attachments = [
+        FileAttachment(
+            name=str(a.get("name") or ""),
+            file_type=str(a.get("fileType") or ""),
+            content_type=str(a.get("contentType") or ""),
+        )
+        for a in (raw.get("fileAttachments") or [])
+        if isinstance(a, dict)
+    ]
     role = str(raw.get("role") or "bot")
     return Message(
         role=role,
@@ -108,6 +124,7 @@ def _parse_message(raw: dict) -> Message:
         text=str(raw.get("text") or ""),
         tool_calls=tool_calls,
         thoughts=thoughts,
+        file_attachments=attachments,
         occurred_at=raw.get("timestamp") or raw.get("occurredAt"),
     )
 

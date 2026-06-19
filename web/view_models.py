@@ -11,6 +11,9 @@ from explainer import explain
 from models import AnalysisReport, Conversation, Message, ToolCall
 from renderer import render_sequence_diagram
 
+from analysis import PROVIDER_META, build_tool_hierarchy, tool_failed
+from config import CREDIT_ESTIMATOR_URL
+
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _ACTION_PARAM_KEYS = {"content", "contenttype", "memberupns", "useridorupn", "recipient", "chatid", "messageid"}
 _ACTION_NAME_PREFIXES = ("send", "list", "create", "update", "delete", "post", "get", "add", "remove")
@@ -35,12 +38,92 @@ _CREDIT_KIND_STYLE = {
     "generative_answer": ("Generative answer", "sparkles", "blue"),
     "agent_action": ("Agent action", "zap", "amber"),
     "classic_answer": ("Classic answer", "message-square", "gray"),
+    "premium_reasoning": ("Reasoning tokens (premium)", "brain", "purple"),
+    "content_processing": ("Content processing", "file-text", "cyan"),
+    "tenant_graph": ("Tenant graph grounding", "share-2", "teal"),
+}
+_SANDBOX_CATEGORY_STYLE = {
+    "read-document": ("Read document", "file-search", "blue"),
+    "preprocess": ("Preprocess / convert", "cog", "purple"),
+    "inspect-fs": ("Inspect file system", "folder-tree", "amber"),
+    "permissions": ("Permissions", "lock", "red"),
+    "shell-other": ("Shell command", "terminal", "gray"),
+}
+_FRICTION_STYLE = {
+    "permission-denied": ("Permission denied", "shield-alert", "red"),
+    "alternative-approach": ("Changed approach", "rotate-ccw", "amber"),
+    "retry": ("Retried", "refresh-cw", "blue"),
 }
 _COMPONENT_CATEGORY_ICON = {
     "Agent settings": "settings",
     "Knowledge": "book-open",
     "Environment variables": "braces",
     "Tools & actions": "wrench",
+}
+_GROUP_META = {
+    "agent": ("Agent", "settings", "Core agent configuration and system instructions."),
+    "knowledge": ("Knowledge sources", "book-open", "Grounding sources the agent can search."),
+    "tools": ("Tools", "wrench", "Tools the agent can use, grouped by kind (MCP, connector, connected agent, flow, skill, action)."),
+    "env": ("Environment variables", "braces", "Configuration values resolved per environment."),
+}
+
+# Styling for the new analysis features (#10/#5/#2/#11/#12).
+_RECOVERY_STYLE = {
+    "recovered-other-tool": ("Recovered via other tool", "circle-check", "grass"),
+    "retried-same": ("Retried same tool", "rotate-ccw", "blue"),
+    "unhandled-but-answered": ("Answered without recovery", "message-circle", "amber"),
+    "gave-up": ("Gave up", "circle-x", "red"),
+}
+_REPETITION_STYLE = {
+    "agent-answer": ("Repeated answer", "copy", "amber"),
+    "agent-tool": ("Tool loop", "repeat", "red"),
+    "user-question": ("Repeated question", "messages-square", "amber"),
+}
+_RISK_STYLE = {
+    "low": ("Low risk", "circle-check", "grass"),
+    "medium": ("Medium risk", "circle-alert", "amber"),
+    "high": ("High risk", "triangle-alert", "red"),
+}
+_VERDICT_STYLE = {
+    "verified-in-tool-output": ("Verified in tool output", "circle-check", "grass"),
+    "attributed-source-in-sandbox": ("Attributed — source in sandbox", "file-check", "blue"),
+    "dangling-attribution": ("Dangling attribution", "unlink", "red"),
+    "unattributed-quote": ("Unattributed quote", "triangle-alert", "amber"),
+}
+_COVERAGE_STYLE = {
+    "zero-result-search": ("Zero-result search", "search-x", "red"),
+    "acknowledged-gap": ("Acknowledged gap", "shield-check", "amber"),
+    "uncited-answer": ("Uncited answer", "message-square-warning", "amber"),
+}
+_TIMELINE_TOOL_ICON = {"retrieval": "search", "action": "zap", "skill": "puzzle", "other": "wrench"}
+
+# Styling for the conv8 gap-analysis features (G1–G5).
+_ARTIFACT_TYPE_STYLE = {
+    "pptx": ("PowerPoint", "presentation", "amber"),
+    "docx": ("Word", "file-text", "blue"),
+    "xlsx": ("Excel", "table", "grass"),
+    "csv": ("CSV", "table", "grass"),
+    "pdf": ("PDF", "file-text", "red"),
+    "png": ("Image", "image", "purple"),
+    "jpg": ("Image", "image", "purple"),
+    "txt": ("Text", "file", "gray"),
+    "json": ("JSON", "braces", "cyan"),
+}
+_ARTIFACT_HOW_STYLE = {
+    "python": ("Authored with code", "code", "purple"),
+    "skill": ("Produced by a skill", "puzzle", "blue"),
+    "unknown": ("Generated", "file-output", "gray"),
+}
+_SNIPPET_MODE_STYLE = {
+    "stub": ("Download stubs (no text)", "file-down", "amber"),
+    "content": ("Inline snippet text", "file-text", "grass"),
+    "mixed": ("Mixed stubs + text", "files", "blue"),
+    "unknown": ("Unknown", "circle-help", "gray"),
+}
+_SPAN_VISIBILITY_STYLE = {
+    "document-level": ("Document-level", "file", "amber"),
+    "span-level": ("Passage-level", "text-select", "grass"),
+    "unknown": ("Unknown", "circle-help", "gray"),
 }
 
 
@@ -193,6 +276,7 @@ class CitationRowVM:
     source: str = ""
     turn_index: str = ""
     provenance: str = ""
+    cross_turn: bool = False
 
 
 @dataclass
@@ -215,6 +299,203 @@ class CreditKindVM:
 
 
 @dataclass
+class ToolFailureVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    name: str = ""
+    params_summary: str = ""
+    error_text: str = ""
+    embedded: bool = False
+    recovery_label: str = ""
+    next_action: str = ""
+    next_label: str = ""
+    icon: str = "circle-x"
+    color: str = "red"
+
+
+@dataclass
+class DuplicateGroupVM:
+    name: str = ""
+    params_summary: str = ""
+    count: int = 0
+    count_label: str = ""
+    turns: str = ""
+    turns_label: str = ""
+
+
+@dataclass
+class RepetitionVM:
+    kind_label: str = ""
+    turns: str = ""
+    turns_label: str = ""
+    similarity: str = ""
+    excerpt: str = ""
+    icon: str = "repeat"
+    color: str = "amber"
+
+
+@dataclass
+class AnswerGroundingVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    factual_claims: int = 0
+    cited_claims: int = 0
+    had_retrieval: bool = False
+    claims_label: str = ""
+    retrieval_label: str = ""
+    risk_label: str = ""
+    excerpt: str = ""
+    icon: str = "circle-check"
+    color: str = "grass"
+
+
+@dataclass
+class QuoteCheckVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    excerpt: str = ""
+    source_title: str = ""
+    verdict_label: str = ""
+    icon: str = "quote"
+    color: str = "gray"
+
+
+@dataclass
+class CoverageGapVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    user_question: str = ""
+    reason_label: str = ""
+    query: str = ""
+    icon: str = "search-x"
+    color: str = "amber"
+
+
+@dataclass
+class SandboxSignalVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    category_label: str = ""
+    tool: str = ""
+    excerpt: str = ""
+    icon: str = "terminal"
+    color: str = "gray"
+
+
+@dataclass
+class SandboxFrictionVM:
+    turn_index: int = 0
+    turn_label: str = ""
+    kind_label: str = ""
+    excerpt: str = ""
+    recovered: bool = False
+    recovered_label: str = ""
+    icon: str = "shield-alert"
+    color: str = "red"
+
+
+@dataclass
+class SkillUseVM:
+    name: str = ""
+    category_label: str = ""
+    turn_label: str = ""
+    note: str = ""
+    icon: str = "puzzle"
+    color: str = "blue"
+
+
+@dataclass
+class FolderVM:
+    path: str = ""
+    area: str = ""
+    count: int = 0
+    count_label: str = ""
+    doc_titles: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DocRetrievalVM:
+    title: str = ""
+    reference_id: str = ""
+    retrieval_count: int = 0
+    count_label: str = ""
+    turns_label: str = ""
+    cited: bool = False
+    cited_label: str = ""
+    icon: str = "circle-check"
+    color: str = "grass"
+
+
+@dataclass
+class SearchPrecisionVM:
+    turn_label: str = ""
+    query: str = ""
+    retrieved: int = 0
+    cited_from_search: int = 0
+    precision_label: str = ""
+    productive: bool = False
+    icon: str = "circle-check"
+    color: str = "grass"
+
+
+@dataclass
+class RecallTurnVM:
+    turn_label: str = ""
+    excerpt: str = ""
+
+
+@dataclass
+class GeneratedArtifactVM:
+    name: str = ""
+    turn_label: str = ""
+    type_label: str = ""
+    type_icon: str = "file-output"
+    type_color: str = "gray"
+    how_label: str = ""
+    how_icon: str = "file-output"
+    how_color: str = "gray"
+    evidence: str = ""
+
+
+@dataclass
+class GroundingDocVM:
+    title: str = ""
+    reference_id: str = ""
+    cited: bool = False
+    chain_label: str = ""  # "Searched → downloaded → preprocessed → read"
+    cited_label: str = ""
+    icon: str = "file-search"
+    color: str = "blue"
+
+
+@dataclass
+class SkillGapVM:
+    turn_label: str = ""
+    wanted_label: str = ""
+    fallback_label: str = ""
+    excerpt: str = ""
+    icon: str = "puzzle"
+    color: str = "amber"
+
+
+@dataclass
+class TimelineEventVM:
+    kind: str = "answer"  # user / thought / tool / answer
+    icon: str = "dot"
+    color: str = "gray"
+    label: str = ""
+    text: str = ""
+    failed: bool = False
+
+
+@dataclass
+class TimelineTurnVM:
+    index: int = 0
+    title: str = ""
+    events: list[TimelineEventVM] = field(default_factory=list)
+
+
+@dataclass
 class ComponentVM:
     id: str = ""
     category: str = ""
@@ -224,6 +505,31 @@ class ComponentVM:
     doc: str = ""
     documented: bool = True
     icon: str = "settings"
+    search_text: str = ""
+
+
+@dataclass
+class ComponentNodeVM:
+    """One node in the hierarchical component explorer. The tree is stored flat
+    (parent before children) and rendered with indentation; `is_branch` marks
+    groups/providers that can collapse and `indent` is the precomputed padding."""
+
+    id: str = ""
+    parent_id: str = ""
+    depth: int = 0
+    indent: str = "8px"
+    node_type: str = "leaf"  # group | provider | leaf
+    is_branch: bool = False  # group or provider (collapsible, has children)
+    category: str = ""
+    label: str = ""
+    value: str = ""
+    summary: str = ""
+    doc: str = ""
+    documented: bool = True
+    icon: str = "settings"
+    kind_badge: str = ""
+    child_count: int = 0
+    selectable: bool = True
     search_text: str = ""
 
 
@@ -283,14 +589,106 @@ class ReportVM:
     eff_distinct_docs: int = 0
     eff_avg_docs: str = "0"
     eff_unattributed: int = 0
-    # credit estimate (#9)
+    # credit estimate (#9 + modern E1–E4)
     credit_lines: list[CreditLineVM] = field(default_factory=list)
     credit_by_kind: list[CreditKindVM] = field(default_factory=list)
     credit_total: str = "0"
     credit_notes: list[str] = field(default_factory=list)
     has_credits: bool = False
+    credit_reasoning_model: bool = False
+    credit_total_tokens: int = 0
+    credit_assumptions: list[str] = field(default_factory=list)
+    credit_estimator_url: str = ""
+    # code interpreter / sandbox (D1–D3)
+    sandbox_used: bool = False
+    sandbox_turns: int = 0
+    sandbox_tools: list[str] = field(default_factory=list)
+    sandbox_tools_label: str = ""
+    sandbox_signals: list[SandboxSignalVM] = field(default_factory=list)
+    sandbox_friction: list[SandboxFrictionVM] = field(default_factory=list)
+    sandbox_friction_count: int = 0
+    sandbox_skills: list[SkillUseVM] = field(default_factory=list)
+    sandbox_doc_skills: int = 0
+    # retrieval depth (B1–B4)
+    rd_folders: list[FolderVM] = field(default_factory=list)
+    rd_docs: list[DocRetrievalVM] = field(default_factory=list)
+    rd_unique_docs: int = 0
+    rd_total_retrieved: int = 0
+    rd_overlap_docs: int = 0
+    rd_cited_docs: int = 0
+    rd_over_retrieval_label: str = "0%"
+    rd_over_retrieval_pct: int = 0
+    rd_mode: str = "inline"
+    rd_full_reads: int = 0
+    has_retrieval_depth: bool = False
+    # search strategy (A1–A2)
+    search_precision: list[SearchPrecisionVM] = field(default_factory=list)
+    recall_turns: list[RecallTurnVM] = field(default_factory=list)
+    ss_productive: int = 0
+    ss_unproductive: int = 0
+    has_search_strategy: bool = False
+    # generated artifacts (G1)
+    artifacts: list[GeneratedArtifactVM] = field(default_factory=list)
+    artifact_count: int = 0
+    artifact_types_label: str = ""
+    has_artifacts: bool = False
+    # code-interpreter purpose split (G2)
+    sandbox_authoring_turns: list[int] = field(default_factory=list)
+    sandbox_analysis_turns: list[int] = field(default_factory=list)
+    sandbox_authoring_label: str = ""
+    sandbox_analysis_label: str = ""
+    # skill gaps (G3)
+    skill_gaps: list[SkillGapVM] = field(default_factory=list)
+    has_skill_gaps: bool = False
+    # grounding pipeline (G4)
+    grounding_docs: list[GroundingDocVM] = field(default_factory=list)
+    gp_snippet_mode_label: str = ""
+    gp_snippet_mode_icon: str = "circle-help"
+    gp_snippet_mode_color: str = "gray"
+    gp_span_label: str = ""
+    gp_span_icon: str = "circle-help"
+    gp_span_color: str = "gray"
+    gp_stub_results: int = 0
+    gp_content_results: int = 0
+    gp_notes: list[str] = field(default_factory=list)
+    has_grounding_pipeline: bool = False
     # component explorer (#8)
     components: list[ComponentVM] = field(default_factory=list)
+    component_nodes: list[ComponentNodeVM] = field(default_factory=list)
+    # failed-tool & recovery (#10)
+    tool_failure_rows: list[ToolFailureVM] = field(default_factory=list)
+    tf_total: int = 0
+    tf_embedded: int = 0
+    tf_recovered: int = 0
+    tf_gaveup: int = 0
+    # tool efficiency (#6)
+    duplicate_groups: list[DuplicateGroupVM] = field(default_factory=list)
+    eff_total_calls: int = 0
+    eff_unique_calls: int = 0
+    eff_redundant: int = 0
+    eff_calls_per_answer: str = "0"
+    # repetition / loops (#5)
+    repetition: list[RepetitionVM] = field(default_factory=list)
+    # per-answer groundedness (#2)
+    answer_grounding: list[AnswerGroundingVM] = field(default_factory=list)
+    ag_high: int = 0
+    ag_medium: int = 0
+    ag_low: int = 0
+    # quote traceability (#11)
+    quote_rows: list[QuoteCheckVM] = field(default_factory=list)
+    qf_verified: int = 0
+    qf_attributed: int = 0
+    qf_dangling: int = 0
+    qf_unattributed: int = 0
+    # coverage gaps (#12)
+    coverage_gaps: list[CoverageGapVM] = field(default_factory=list)
+    # turn economy (#16)
+    te_calls_per_answer: str = "0"
+    te_searches_to_first: int = 0
+    te_avg_bot_msgs: str = "0"
+    te_user_turns: int = 0
+    # timeline (#8 view)
+    timeline: list[TimelineTurnVM] = field(default_factory=list)
     # reasoning
     premise_corrections: list[str] = field(default_factory=list)
     thoughts_per_turn: list[int] = field(default_factory=list)
@@ -528,6 +926,7 @@ def _build_citation_rows(report: AnalysisReport) -> list[CitationRowVM]:
                 source=r.source or "",
                 turn_index=str(r.turn_index) if r.turn_index is not None else "",
                 provenance=r.provenance or "",
+                cross_turn=r.cross_turn,
             )
         )
     return out
@@ -563,6 +962,169 @@ def _build_credits(report: AnalysisReport) -> tuple[list[CreditLineVM], list[Cre
         for k, v in sorted(est.by_kind.items(), key=lambda kv: -kv[1])
     ]
     return lines, by_kind, _fmt(est.total_credits), list(est.notes), True
+
+
+def _build_sandbox(report: AnalysisReport) -> tuple[list[SandboxSignalVM], list[SandboxFrictionVM], list[SkillUseVM]]:
+    ci = report.code_interpreter
+    if ci is None:
+        return [], [], []
+    signals = [
+        SandboxSignalVM(
+            turn_index=s.turn_index,
+            turn_label=f"Turn {s.turn_index}",
+            category_label=_SANDBOX_CATEGORY_STYLE.get(s.category, (s.category, "terminal", "gray"))[0],
+            tool=s.tool,
+            excerpt=s.excerpt,
+            icon=_SANDBOX_CATEGORY_STYLE.get(s.category, (s.category, "terminal", "gray"))[1],
+            color=_SANDBOX_CATEGORY_STYLE.get(s.category, (s.category, "terminal", "gray"))[2],
+        )
+        for s in ci.signals
+    ]
+    friction = [
+        SandboxFrictionVM(
+            turn_index=f.turn_index,
+            turn_label=f"Turn {f.turn_index}",
+            kind_label=_FRICTION_STYLE.get(f.kind, (f.kind, "shield-alert", "red"))[0],
+            excerpt=f.excerpt,
+            recovered=f.recovered,
+            recovered_label="Recovered" if f.recovered else "Unresolved",
+            icon=_FRICTION_STYLE.get(f.kind, (f.kind, "shield-alert", "red"))[1],
+            color="grass" if f.recovered else _FRICTION_STYLE.get(f.kind, (f.kind, "shield-alert", "red"))[2],
+        )
+        for f in ci.friction
+    ]
+    skills = [
+        SkillUseVM(
+            name=s.name,
+            category_label="Document processing" if s.category == "document-processing" else "Skill",
+            turn_label=f"Turn {s.turn_index}" if s.turn_index is not None else "",
+            note=s.note,
+            icon="file-text" if s.category == "document-processing" else "puzzle",
+            color="cyan" if s.category == "document-processing" else "blue",
+        )
+        for s in ci.skills
+    ]
+    return signals, friction, skills
+
+
+def _build_retrieval_depth(report: AnalysisReport) -> tuple[list[FolderVM], list[DocRetrievalVM]]:
+    rd = report.retrieval_depth
+    if rd is None:
+        return [], []
+    folders = [
+        FolderVM(
+            path=f.path,
+            area=f.area,
+            count=f.count,
+            count_label=f"{f.count} doc" + ("s" if f.count != 1 else ""),
+            doc_titles=list(f.doc_titles),
+        )
+        for f in rd.folders
+    ]
+    docs = [
+        DocRetrievalVM(
+            title=d.title,
+            reference_id=d.reference_id or "",
+            retrieval_count=d.retrieval_count,
+            count_label=f"{d.retrieval_count}× retrieved",
+            turns_label="Turn " + ", ".join(str(t) for t in d.turns),
+            cited=d.cited,
+            cited_label="Cited" if d.cited else "Not cited",
+            icon="circle-check" if d.cited else "circle-minus",
+            color="grass" if d.cited else "amber",
+        )
+        for d in rd.doc_retrievals
+    ]
+    return folders, docs
+
+
+def _build_search_strategy(report: AnalysisReport) -> tuple[list[SearchPrecisionVM], list[RecallTurnVM]]:
+    ss = report.search_strategy
+    if ss is None:
+        return [], []
+    searches = [
+        SearchPrecisionVM(
+            turn_label=f"Turn {s.turn_index}",
+            query=s.query,
+            retrieved=s.retrieved,
+            cited_from_search=s.cited_from_search,
+            precision_label=f"{s.cited_from_search} of {s.retrieved} cited",
+            productive=s.productive,
+            icon="circle-check" if s.productive else "circle-x",
+            color="grass" if s.productive else "red",
+        )
+        for s in ss.searches
+    ]
+    recall = [RecallTurnVM(turn_label=f"Turn {t.turn_index}", excerpt=t.excerpt) for t in ss.recall_turns]
+    return searches, recall
+
+
+def _build_artifacts(report: AnalysisReport) -> list[GeneratedArtifactVM]:
+    ga = report.generated_artifacts
+    if ga is None:
+        return []
+    out: list[GeneratedArtifactVM] = []
+    for it in ga.items:
+        tstyle = _ARTIFACT_TYPE_STYLE.get(it.file_type.lower(), (it.file_type.upper() or "File", "file-output", "gray"))
+        hstyle = _ARTIFACT_HOW_STYLE.get(it.how_made, _ARTIFACT_HOW_STYLE["unknown"])
+        out.append(
+            GeneratedArtifactVM(
+                name=it.name,
+                turn_label=f"Turn {it.turn_index}" if it.turn_index is not None else "",
+                type_label=tstyle[0],
+                type_icon=tstyle[1],
+                type_color=tstyle[2],
+                how_label=hstyle[0],
+                how_icon=hstyle[1],
+                how_color=hstyle[2],
+                evidence=it.evidence,
+            )
+        )
+    return out
+
+
+def _build_grounding(report: AnalysisReport) -> list[GroundingDocVM]:
+    gp = report.grounding_pipeline
+    if gp is None:
+        return []
+    out: list[GroundingDocVM] = []
+    for d in gp.docs:
+        steps = ["Searched"]
+        if d.downloaded:
+            steps.append("downloaded")
+        if d.preprocessed:
+            steps.append("preprocessed")
+        if d.read_full:
+            steps.append("read")
+        out.append(
+            GroundingDocVM(
+                title=d.title or d.reference_id or "(untitled)",
+                reference_id=d.reference_id or "",
+                cited=d.cited,
+                chain_label=" → ".join(steps),
+                cited_label="Cited" if d.cited else "Not cited",
+                icon="file-check" if d.cited else "file-search",
+                color="grass" if d.cited else "gray",
+            )
+        )
+    return out
+
+
+def _build_skill_gaps(report: AnalysisReport) -> list[SkillGapVM]:
+    ci = report.code_interpreter
+    if ci is None:
+        return []
+    out: list[SkillGapVM] = []
+    for g in ci.skill_gaps:
+        out.append(
+            SkillGapVM(
+                turn_label=f"Turn {g.turn_index}",
+                wanted_label=f"Wanted: {g.wanted}" if g.wanted else "No matching skill",
+                fallback_label=f"Fell back to {g.fallback}" if g.fallback else "Fell back to raw code",
+                excerpt=g.excerpt,
+            )
+        )
+    return out
 
 
 def _comp(idx: int, category: str, label: str, value: str, key: str, kvalue: str | None = None) -> ComponentVM:
@@ -673,9 +1235,309 @@ def _build_components(report: AnalysisReport, convo: Conversation | None) -> lis
     return out
 
 
+def _agent_settings_rows(p) -> list[tuple[str, str, str, str | None]]:
+    """(label, value, kb_key, kb_value) for the agent group — shared shape."""
+    rows: list[tuple[str, str, str, str | None]] = []
+    if p.model_label or p.model_series:
+        rows.append(("Model", p.model_label or p.model_series or "", "model", None))
+    if p.is_modern:
+        rows.append(("Orchestration", "Generative orchestration", "orchestration", None))
+    if p.instructions:
+        rows.append(("Instructions", f"{len(p.instruction_segments) or 1} segment(s)", "instructions", None))
+    if p.authentication_mode:
+        rows.append(("Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode))
+    if p.authentication_trigger:
+        rows.append(("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger))
+    if p.access_control_policy:
+        rows.append(("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy))
+    rows.append(("Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory", None))
+    if p.conversation_starters:
+        rows.append(("Conversation starters", f"{len(p.conversation_starters)} starter(s)", "conversationStarters", None))
+    if p.recognizer_kind:
+        rows.append(("Recognizer", p.recognizer_kind, "recognizer", None))
+    if p.template:
+        rows.append(("Template", p.template, "template", None))
+    if p.runtime_provider:
+        rows.append(("Runtime provider", p.runtime_provider, "runtimeProvider", None))
+    return rows
+
+
+def _branch(nodes: list, nid: str, key: str, child_count: int) -> None:
+    label, icon, summary = _GROUP_META[key]
+    nodes.append(
+        ComponentNodeVM(
+            id=nid, depth=0, indent="8px", node_type="group", is_branch=True, category=label,
+            label=label, value=f"{child_count} item(s)", summary=summary, icon=icon,
+            child_count=child_count, selectable=False, search_text=f"{label} {summary}".lower(),
+        )
+    )
+
+
+def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -> list[ComponentNodeVM]:
+    nodes: list[ComponentNodeVM] = []
+    p = report.agent
+
+    # ── Agent ──────────────────────────────────────────────────────────────
+    if p is not None:
+        settings = _agent_settings_rows(p)
+        if settings:
+            _branch(nodes, "g-agent", "agent", len(settings))
+            for j, (label, value, key, kvalue) in enumerate(settings):
+                ex = explain(key, kvalue)
+                nodes.append(
+                    ComponentNodeVM(
+                        id=f"agent-{j}", parent_id="g-agent", depth=1, indent="26px", node_type="leaf",
+                        category="Agent", label=label, value=value, summary=ex.summary, doc=ex.doc or "",
+                        documented=ex.documented, icon="settings",
+                        search_text=f"{label} {value} agent {ex.summary}".lower(),
+                    )
+                )
+
+    # ── Knowledge sources ──────────────────────────────────────────────────
+    if p is not None and p.knowledge_sources:
+        _branch(nodes, "g-knowledge", "knowledge", len(p.knowledge_sources))
+        for j, ks in enumerate(p.knowledge_sources):
+            specific = f"knowledge.{ks.source_kind}" if ks.source_kind else "knowledge"
+            ex = explain(specific)
+            if not ex.documented:
+                ex = explain("knowledge")
+            nodes.append(
+                ComponentNodeVM(
+                    id=f"kb-{j}", parent_id="g-knowledge", depth=1, indent="26px", node_type="leaf",
+                    category="Knowledge", label=ks.display_name or "(knowledge source)", value=ks.source_kind or "",
+                    summary=ex.summary, doc=ex.doc or "", documented=ex.documented, icon="book-open",
+                    search_text=f"{ks.display_name} {ks.source_kind} {ks.source_site} {ex.summary}".lower(),
+                )
+            )
+
+    # ── Tools (Provider → Operation) ───────────────────────────────────────
+    providers = build_tool_hierarchy(p, convo)
+    if providers:
+        _branch(nodes, "g-tools", "tools", len(providers))
+        for pi, pr in enumerate(providers):
+            badge, picon, kbkey = PROVIDER_META.get(pr.kind, ("Tool", "wrench", "tool"))
+            pex = explain(kbkey)
+            pid = f"prov-{pi}"
+            origin = "Declared in agent" if pr.configured else "Observed at runtime"
+            src = f" · {pr.source}" if pr.source else ""
+            nodes.append(
+                ComponentNodeVM(
+                    id=pid, parent_id="g-tools", depth=1, indent="26px", node_type="provider", is_branch=True,
+                    category="Tools", label=pr.display_name, value=f"{len(pr.operations)} operation(s) · {origin}{src}",
+                    summary=pex.summary, doc=pex.doc or "", documented=pex.documented, icon=picon, kind_badge=badge,
+                    child_count=len(pr.operations), selectable=True,
+                    search_text=f"{pr.display_name} {badge} {pr.kind} {pex.summary}".lower(),
+                )
+            )
+            for oi, op in enumerate(pr.operations):
+                olabel = op.display_name or op.name
+                oval = "Declared" if op.configured else "Observed at runtime"
+                if op.description:
+                    osum, odoc, odoc_ok = op.description, "", True
+                else:
+                    osum, odoc, odoc_ok = pex.summary, pex.doc or "", pex.documented
+                nodes.append(
+                    ComponentNodeVM(
+                        id=f"op-{pi}-{oi}", parent_id=pid, depth=2, indent="44px", node_type="leaf",
+                        category="Tools", label=olabel, value=oval, summary=osum, doc=odoc, documented=odoc_ok,
+                        icon="dot", kind_badge=badge,
+                        search_text=f"{olabel} {op.name} {badge} {pr.display_name} {osum}".lower(),
+                    )
+                )
+
+    # ── Environment variables ──────────────────────────────────────────────
+    if p is not None and p.environment_variables:
+        _branch(nodes, "g-env", "env", len(p.environment_variables))
+        for j, ev in enumerate(p.environment_variables):
+            ex = explain("environmentVariable")
+            label = ev.display_name or ev.schema_name or "(env var)"
+            value = ev.type or (ev.default_value or "")
+            nodes.append(
+                ComponentNodeVM(
+                    id=f"env-{j}", parent_id="g-env", depth=1, indent="26px", node_type="leaf",
+                    category="Environment variables", label=label, value=value, summary=ex.summary,
+                    doc=ex.doc or "", documented=ex.documented, icon="braces",
+                    search_text=f"{label} {value} environment variable {ex.summary}".lower(),
+                )
+            )
+
+    return nodes
+
+
 # ---------------------------------------------------------------------------
 # Top-level mapping
 # ---------------------------------------------------------------------------
+
+
+def _build_tool_failures(report: AnalysisReport) -> list[ToolFailureVM]:
+    tf = report.tool_failures
+    if tf is None:
+        return []
+    rows: list[ToolFailureVM] = []
+    for f in tf.failures:
+        label, icon, color = _RECOVERY_STYLE.get(f.recovery, ("", "circle-x", "red"))
+        rows.append(
+            ToolFailureVM(
+                turn_index=f.turn_index,
+                turn_label=f"Turn {f.turn_index}",
+                name=f.name,
+                params_summary=f.params_summary,
+                error_text=f.error_text,
+                embedded=f.embedded,
+                recovery_label=label,
+                next_action=f.next_action or "",
+                next_label=f"→ {f.next_action}" if f.next_action else "",
+                icon=icon,
+                color=color,
+            )
+        )
+    return rows
+
+
+def _build_repetition(report: AnalysisReport) -> list[RepetitionVM]:
+    rep = report.repetition
+    if rep is None:
+        return []
+    out: list[RepetitionVM] = []
+    for s in rep.signals:
+        label, icon, color = _REPETITION_STYLE.get(s.kind, (s.kind, "repeat", "amber"))
+        out.append(
+            RepetitionVM(
+                kind_label=label,
+                turns=", ".join(str(t) for t in s.turns),
+                turns_label="Turns " + ", ".join(str(t) for t in s.turns),
+                similarity=f"{int(round(s.similarity * 100))}%",
+                excerpt=s.excerpt,
+                icon=icon,
+                color=color,
+            )
+        )
+    return out
+
+
+def _build_answer_grounding(report: AnalysisReport) -> list[AnswerGroundingVM]:
+    ag = report.answer_groundedness
+    if ag is None:
+        return []
+    rank = {"high": 0, "medium": 1, "low": 2}
+    out: list[AnswerGroundingVM] = []
+    for a in sorted(ag.answers, key=lambda a: rank.get(a.risk, 3)):
+        label, icon, color = _RISK_STYLE.get(a.risk, ("", "circle", "gray"))
+        out.append(
+            AnswerGroundingVM(
+                turn_index=a.turn_index,
+                turn_label=f"Turn {a.turn_index}",
+                factual_claims=a.factual_claims,
+                cited_claims=a.cited_claims,
+                had_retrieval=a.had_retrieval,
+                claims_label=f"{a.cited_claims}/{a.factual_claims} claims cited",
+                retrieval_label="search returned docs" if a.had_retrieval else "no retrieval",
+                risk_label=label,
+                excerpt=a.excerpt,
+                icon=icon,
+                color=color,
+            )
+        )
+    return out
+
+
+def _build_quotes(report: AnalysisReport) -> list[QuoteCheckVM]:
+    qf = report.quote_faithfulness
+    if qf is None:
+        return []
+    rank = {"unattributed-quote": 0, "dangling-attribution": 1, "attributed-source-in-sandbox": 2, "verified-in-tool-output": 3}
+    out: list[QuoteCheckVM] = []
+    for q in sorted(qf.quotes, key=lambda q: rank.get(q.verdict, 4)):
+        label, icon, color = _VERDICT_STYLE.get(q.verdict, (q.verdict, "quote", "gray"))
+        out.append(
+            QuoteCheckVM(
+                turn_index=q.turn_index,
+                turn_label=f"Turn {q.turn_index}",
+                excerpt=q.excerpt,
+                source_title=q.source_title or "",
+                verdict_label=label,
+                icon=icon,
+                color=color,
+            )
+        )
+    return out
+
+
+def _build_coverage_gaps(report: AnalysisReport) -> list[CoverageGapVM]:
+    cg = report.coverage_gaps
+    if cg is None:
+        return []
+    out: list[CoverageGapVM] = []
+    for g in cg.gaps:
+        label, icon, color = _COVERAGE_STYLE.get(g.reason, (g.reason, "search-x", "amber"))
+        out.append(
+            CoverageGapVM(
+                turn_index=g.turn_index,
+                turn_label=f"Turn {g.turn_index}",
+                user_question=g.user_question,
+                reason_label=label,
+                query=g.query,
+                icon=icon,
+                color=color,
+            )
+        )
+    return out
+
+
+def _build_timeline(convo: Conversation | None) -> list[TimelineTurnVM]:
+    if convo is None:
+        return []
+    turns: list[TimelineTurnVM] = []
+    for turn in convo.turns:
+        events: list[TimelineEventVM] = []
+        if turn.user_message is not None and turn.user_message.text.strip():
+            events.append(
+                TimelineEventVM(kind="user", icon="user", color="grass", label="User", text=_clip(turn.user_message.text, 240))
+            )
+        for m in turn.bot_messages:
+            for th in m.thoughts:
+                if th.text.strip():
+                    events.append(
+                        TimelineEventVM(kind="thought", icon="brain", color="purple", label="Thought", text=_clip(th.text, 200))
+                    )
+            for tc in m.tool_calls:
+                kind = classify_tool(tc)
+                failed = tool_failed(tc)
+                detail = tc.query or _params_preview(tc)
+                events.append(
+                    TimelineEventVM(
+                        kind="tool",
+                        icon="circle-x" if failed else _TIMELINE_TOOL_ICON.get(kind, "wrench"),
+                        color="red" if failed else "blue",
+                        label=tc.display_name or tc.name or "tool",
+                        text=detail,
+                        failed=failed,
+                    )
+                )
+            if m.text.strip():
+                events.append(
+                    TimelineEventVM(kind="answer", icon="bot", color="blue", label="Agent", text=_clip(m.text, 280))
+                )
+        title = "Greeting" if turn.user_message is None else f"Turn {turn.index}"
+        turns.append(TimelineTurnVM(index=turn.index, title=title, events=events))
+    return turns
+
+
+def _params_preview(tc: ToolCall, limit: int = 100) -> str:
+    if not isinstance(tc.params, dict) or not tc.params:
+        return ""
+    parts = []
+    for k, v in tc.params.items():
+        vs = " ".join(str(v).split())
+        vs = vs if len(vs) <= 40 else vs[:39] + "…"
+        parts.append(f"{k}={vs}")
+    s = " ".join(parts)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcript: str = "") -> ReportVM:
@@ -791,7 +1653,121 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
         vm.eff_unattributed = eff.unattributed_docs
 
     vm.credit_lines, vm.credit_by_kind, vm.credit_total, vm.credit_notes, vm.has_credits = _build_credits(report)
+    if report.credit_estimate is not None:
+        ce = report.credit_estimate
+        vm.credit_reasoning_model = ce.reasoning_model
+        vm.credit_total_tokens = ce.total_tokens
+        vm.credit_assumptions = list(ce.assumptions)
+        vm.credit_estimator_url = CREDIT_ESTIMATOR_URL
+
+    if report.code_interpreter is not None:
+        ci = report.code_interpreter
+        vm.sandbox_signals, vm.sandbox_friction, vm.sandbox_skills = _build_sandbox(report)
+        vm.sandbox_used = ci.used
+        vm.sandbox_turns = ci.turns_with_code
+        vm.sandbox_tools = list(ci.distinct_tools)
+        vm.sandbox_tools_label = ", ".join(ci.distinct_tools) if ci.distinct_tools else "—"
+        vm.sandbox_friction_count = ci.friction_count
+        vm.sandbox_doc_skills = ci.document_processing_skills
+        vm.sandbox_authoring_turns = list(ci.authoring_turns)
+        vm.sandbox_analysis_turns = list(ci.analysis_turns)
+        vm.sandbox_authoring_label = (
+            "Turn " + ", ".join(str(t) for t in ci.authoring_turns) if ci.authoring_turns else "—"
+        )
+        vm.sandbox_analysis_label = (
+            "Turn " + ", ".join(str(t) for t in ci.analysis_turns) if ci.analysis_turns else "—"
+        )
+        vm.skill_gaps = _build_skill_gaps(report)
+        vm.has_skill_gaps = bool(vm.skill_gaps)
+
+    if report.retrieval_depth is not None:
+        rd = report.retrieval_depth
+        vm.rd_folders, vm.rd_docs = _build_retrieval_depth(report)
+        vm.rd_unique_docs = rd.unique_docs
+        vm.rd_total_retrieved = rd.total_retrieved
+        vm.rd_overlap_docs = rd.overlap_docs
+        vm.rd_cited_docs = rd.cited_docs
+        vm.rd_over_retrieval_label = f"{int(rd.over_retrieval_ratio * 100)}%"
+        vm.rd_over_retrieval_pct = int(rd.over_retrieval_ratio * 100)
+        vm.rd_mode = rd.retrieval_mode
+        vm.rd_full_reads = rd.full_doc_reads
+        vm.has_retrieval_depth = bool(rd.folders or rd.doc_retrievals)
+
+    if report.search_strategy is not None:
+        ss = report.search_strategy
+        vm.search_precision, vm.recall_turns = _build_search_strategy(report)
+        vm.ss_productive = ss.productive_searches
+        vm.ss_unproductive = ss.unproductive_searches
+        vm.has_search_strategy = bool(ss.searches or ss.recall_turns)
+
+    if report.generated_artifacts is not None:
+        ga = report.generated_artifacts
+        vm.artifacts = _build_artifacts(report)
+        vm.artifact_count = ga.count
+        vm.artifact_types_label = ", ".join(f"{v}× {k}" for k, v in ga.by_type.items()) if ga.by_type else ""
+        vm.has_artifacts = bool(ga.items)
+
+    if report.grounding_pipeline is not None:
+        gp = report.grounding_pipeline
+        vm.grounding_docs = _build_grounding(report)
+        sm = _SNIPPET_MODE_STYLE.get(gp.snippet_mode, _SNIPPET_MODE_STYLE["unknown"])
+        vm.gp_snippet_mode_label, vm.gp_snippet_mode_icon, vm.gp_snippet_mode_color = sm
+        sp = _SPAN_VISIBILITY_STYLE.get(gp.span_visibility, _SPAN_VISIBILITY_STYLE["unknown"])
+        vm.gp_span_label, vm.gp_span_icon, vm.gp_span_color = sp
+        vm.gp_stub_results = gp.stub_results
+        vm.gp_content_results = gp.content_results
+        vm.gp_notes = list(gp.notes)
+        vm.has_grounding_pipeline = bool(gp.docs)
+
     vm.components = _build_components(report, convo)
+    vm.component_nodes = _build_component_nodes(report, convo)
+
+    if report.tool_failures is not None:
+        tf = report.tool_failures
+        vm.tool_failure_rows = _build_tool_failures(report)
+        vm.tf_total, vm.tf_embedded = tf.total_failures, tf.embedded_failures
+        vm.tf_recovered, vm.tf_gaveup = tf.recovered, tf.gave_up
+
+    if report.tool_efficiency is not None:
+        te = report.tool_efficiency
+        vm.duplicate_groups = [
+            DuplicateGroupVM(
+                name=d.name,
+                params_summary=d.params_summary,
+                count=d.count,
+                count_label=f"{d.count}× identical",
+                turns=", ".join(str(t) for t in d.turns),
+                turns_label="Turns " + ", ".join(str(t) for t in d.turns),
+            )
+            for d in te.duplicate_groups
+        ]
+        vm.eff_total_calls, vm.eff_unique_calls = te.total_calls, te.unique_calls
+        vm.eff_redundant = te.redundant_calls
+        vm.eff_calls_per_answer = f"{te.calls_per_answer:g}"
+
+    vm.repetition = _build_repetition(report)
+
+    if report.answer_groundedness is not None:
+        ag = report.answer_groundedness
+        vm.answer_grounding = _build_answer_grounding(report)
+        vm.ag_high, vm.ag_medium, vm.ag_low = ag.high_risk, ag.medium_risk, ag.low_risk
+
+    if report.quote_faithfulness is not None:
+        qf = report.quote_faithfulness
+        vm.quote_rows = _build_quotes(report)
+        vm.qf_verified, vm.qf_attributed = qf.verified, qf.attributed
+        vm.qf_dangling, vm.qf_unattributed = qf.dangling, qf.unattributed
+
+    vm.coverage_gaps = _build_coverage_gaps(report)
+
+    if report.turn_economy is not None:
+        eco = report.turn_economy
+        vm.te_calls_per_answer = f"{eco.calls_per_answer:g}"
+        vm.te_searches_to_first = eco.searches_to_first_answer
+        vm.te_avg_bot_msgs = f"{eco.avg_bot_msgs_per_turn:g}"
+        vm.te_user_turns = eco.user_turns
+
+    vm.timeline = _build_timeline(convo)
 
     if report.reasoning is not None:
         vm.premise_corrections = list(report.reasoning.premise_corrections)

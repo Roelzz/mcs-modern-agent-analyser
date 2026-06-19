@@ -114,3 +114,31 @@ entries:
       connectors, run flows, invoke prompts, or hand off to other agents — which
       the generative orchestrator can choose to use to complete a task.
     doc: "https://learn.microsoft.com/microsoft-copilot-studio/guidance/agent-tools"
+
+  mcpServer:
+    summary: >-
+      A Model Context Protocol (MCP) server added to the agent as a tool. Each
+      MCP server exposes a set of tools (and resources) on a server; adding it
+      gives the agent access to all the tools available on that server.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/mcp-add-components-to-agent"
+
+  connector:
+    summary: >-
+      A connector lets the agent call an external service as an action. Power
+      Platform connectors wrap an underlying API so the orchestrator can invoke
+      its operations as tools to complete a task.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/advanced-connectors"
+
+  connectedAgent:
+    summary: >-
+      A connected agent is another agent added as a tool, so this agent can
+      delegate or hand off a task to it. Each connected agent contributes its
+      own capabilities to the orchestrator.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/add-tools-custom-agent"
+
+  flow:
+    summary: >-
+      An agent flow is a Power Automate-style flow added as a tool. The agent
+      can call the flow to run a deterministic, multi-step automation and use
+      its output to complete a task.
+    doc: "https://learn.microsoft.com/microsoft-copilot-studio/advanced-use-flow"
