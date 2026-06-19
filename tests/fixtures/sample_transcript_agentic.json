@@ -1,0 +1,180 @@
+[
+  {
+    "role": "bot",
+    "id": "ca308431-a6d8-4224-805f-feb0a6551231",
+    "text": "Hello! I'm Knowledge agent. How can I help you today?"
+  },
+  {
+    "role": "user",
+    "id": "7e337f05-ba86-4c39-9377-7ee1b53fded4",
+    "text": "How many working days must a vacancy be posted internally before it is advertised externally?"
+  },
+  {
+    "role": "bot",
+    "id": "5d7486ef-fcd6-47a9-8891-b07e10e64fd2",
+    "text": "According to the **Job Posting Policy**, all vacancies must be posted internally for a minimum of **5 working days** before they can be advertised externally[1].",
+    "toolCalls": [
+      {
+        "id": "c99f76f9-c354-4fe9-906b-44bc48f6be7e",
+        "name": "KnowledgeSearch",
+        "status": "completed",
+        "displayName": "Searched knowledge",
+        "params": {
+          "query": "vacancy posted internally before advertised externally working days"
+        },
+        "result": "Full documents have been saved to /app/uploads/. Use bash, view, or grep to read them for complete and accurate data. The snippets below are summaries — prefer the full files.\r\n\r\n---\r\n[10 results]\r\n\r\nTitle: Job-Posting-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Recruitment-and-Onboarding/Hiring/Job-Posting-Policy.docx\r\nReferenceId: turn1doc1\r\n[File downloaded to sandbox: Job-Posting-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: New-Hire-Orientation-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Recruitment-and-Onboarding/Onboarding/New-Hire-Orientation-Policy.docx\r\nReferenceId: turn1doc2\r\n[File downloaded to sandbox: New-Hire-Orientation-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Whistleblower-and-Grievance-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Conduct-and-Compliance/Compliance/Whistleblower-and-Grievance-Policy.docx\r\nReferenceId: turn1doc3\r\n[File downloaded to sandbox: Whistleblower-and-Grievance-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Background-Check-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Recruitment-and-Onboarding/Hiring/Background-Check-Policy.docx\r\nReferenceId: turn1doc9\r\n[File downloaded to sandbox: Background-Check-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Health-and-Safety-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Conduct-and-Compliance/Compliance/Health-and-Safety-Policy.docx\r\nReferenceId: turn1doc10\r\n[File downloaded to sandbox: Health-and-Safety-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Probationary-Period-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Recruitment-and-Onboarding/Onboarding/Probationary-Period-Policy.docx\r\nReferenceId: turn1doc11\r\n[File downloaded to sandbox: Probationary-Period-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: IT-Equipment-and-Access-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Recruitment-and-Onboarding/Onboarding/IT-Equipment-and-Access-Policy.docx\r\nReferenceId: turn1doc5\r\n[File downloaded to sandbox: IT-Equipment-and-Access-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Expense-Reimbursement-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Compensation-and-Benefits/Pay/Expense-Reimbursement-Policy.docx\r\nReferenceId: turn1doc6\r\n[File downloaded to sandbox: Expense-Reimbursement-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Remote-and-Hybrid-Work-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Conduct-and-Compliance/Conduct/Remote-and-Hybrid-Work-Policy.docx\r\nReferenceId: turn1doc7\r\n[File downloaded to sandbox: Remote-and-Hybrid-Work-Policy.docx — open this file using the most appropriate skill or tool available to you]\r\n\r\n---\r\nTitle: Paid-Time-Off-Policy.docx\r\nURL: https://copilotstudiotraining.sharepoint.com/sites/RRS/Shared Documents/HR-Policies/Compensation-and-Benefits/Benefits/Paid-Time-Off-Policy.docx\r\nReferenceId: turn1doc8\r\n[File downloaded to sandbox: Paid-Time-Off-Policy.docx — open this file using the most appropriate skill or tool available to you]"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "id": "a0d814f8-be89-483f-909c-d8b7e14e69b3",
+    "text": "What information must every job posting include?"
+  },
+  {
+    "role": "bot",
+    "id": "20cf096b-768e-432f-aa17-3fd990ebcd03",
+    "text": "Based on the Job Posting Policy, every job posting must include the following[1]:\n\n1. **Role title**\n2. **Grade**\n3. **Location**\n4. **Key responsibilities**\n5. **Required qualifications**\n\nAdditionally, postings must use **inclusive language** and must **not reference any protected characteristics**.",
+    "thoughts": [
+      {
+        "id": ":20cf096b-768e-432f-aa17-3fd990ebcd03:block-0:0",
+        "status": "completed",
+        "title": "The answer is already in the Job-Posting-Policy.docx content I retrieved earlier. I don't need to search again.",
+        "description": "The answer is already in the Job-Posting-Policy.docx content I retrieved earlier. I don't need to search again."
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "id": "953b7651-355b-47f7-8785-d3bd7a530140",
+    "text": "What must a hiring manager obtain before a requisition can be opened?"
+  },
+  {
+    "role": "bot",
+    "id": "52531bee-468c-4f2e-a3f2-a0bf7a8f1c85",
+    "text": "A hiring manager must obtain **budget approval** from Finance before a requisition can be opened[1]."
+  },
+  {
+    "role": "user",
+    "id": "c28c2606-8b95-4727-bc6b-b9b97b4ffc4e",
+    "text": "Who is responsible for drafting and publishing job postings?"
+  },
+  {
+    "role": "bot",
+    "id": "a89cdc64-e418-48f3-8c37-b9a56a0e23e4",
+    "text": "**HR Talent Acquisition** is responsible for drafting and publishing job postings[1]."
+  },
+  {
+    "role": "user",
+    "id": "3c12a5ca-1275-42af-a3ea-11a1b99ae0fa",
+    "text": "Can you send this to me in a chat in teams?"
+  },
+  {
+    "role": "bot",
+    "id": "46f65ff8-7ded-43d0-b0de-e07c1bd5db80",
+    "text": "It seems there was an issue sending the message directly to you — it appears the system couldn't create a 1:1 chat in this instance. \n\nCould you let me know the Teams username or email address you'd like the message sent to, or alternatively, I can try sending it to a specific Teams channel instead? Just let me know how you'd like to proceed!",
+    "toolCalls": [
+      {
+        "id": "toolu_01PUX7Cj6WpQkfhWYTyeCWxp",
+        "name": "SendMessageToUser",
+        "status": "completed",
+        "displayName": "SendMessageToUser",
+        "params": {
+          "userIdOrUpn": "roel.schenk@copilotstudiotraining.onmicrosoft.com",
+          "contentType": "html",
+          "content": "<b>Job Posting Policy – Key Points</b><br><br><b>Internal Posting Period:</b> All vacancies must be posted internally for a minimum of <b>5 working days</b> before being advertised externally.<br><br><b>Required Information in Every Job Posting:</b><ul><li>Role title</li><li>Grade</li><li>Location</li><li>Key responsibilities</li><li>Required qualifications</li></ul>Postings must use inclusive language and must not reference any protected characteristics.<br><br><b>Before Opening a Requisition:</b> The hiring manager must obtain <b>budget approval</b> from Finance.<br><br><b>Responsible for Drafting & Publishing:</b> HR Talent Acquisition."
+        },
+        "result": "{\"content\":[{\"type\":\"text\",\"text\":\"Title: Error: Error executing tool: Failed to send message to user:\\u2026\\nReferenceId: turn5doc1\\nError: Error executing tool: Failed to send message to user: Creation of \\u0027OneOnOne\\u0027 chat requires 2 members.\\r\\nCorrelationId: de645272-98c8-494d-81a8-299710c05a8c, TimeStamp: 2026-06-14_13:54:39\"},{\"type\":\"text\",\"text\":\"Title: CorrelationId: de645272-98c8-494d-81a8-299710c05a8c, TimeSta\\u2026\\nReferenceId: turn5doc2\\nCorrelationId: de645272-98c8-494d-81a8-299710c05a8c, TimeStamp: 2026-06-14_13:54:39\"}],\"isError\":true}"
+      }
+    ],
+    "thoughts": [
+      {
+        "id": ":46f65ff8-7ded-43d0-b0de-e07c1bd5db80:block-0:0",
+        "status": "completed",
+        "title": "The user wants me to send the information about job postings to them via Teams chat. I know their email is roel.schenk@copilotstudiotraining.onmicrosoft.com.",
+        "description": "The user wants me to send the information about job postings to them via Teams chat. I know their email is roel.schenk@copilotstudiotraining.onmicrosoft.com."
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "id": "d64c0208-51ed-47bd-85a5-20c3bac2fed0",
+    "text": "roel.schenk@copilotstudiotraining.onmicrosoft.com"
+  },
+  {
+    "role": "bot",
+    "id": "ad742998-5be1-4c39-9aac-f6bc3e964f3e",
+    "text": "I found your account. Let me send the message now using your user ID directly.",
+    "toolCalls": [
+      {
+        "id": "toolu_011ETdsi94dsC425o5PXjeDo",
+        "name": "ListChats",
+        "status": "completed",
+        "displayName": "ListChats",
+        "params": {
+          "memberUpns": "[\"roel.schenk@copilotstudiotraining.onmicrosoft.com\"]"
+        },
+        "result": "{\"content\":[{\"type\":\"text\",\"text\":\"Title: {\\u0022chats\\u0022:[{\\u0022id\\u0022:\\u002219:ce7687c969234a7b834730e49115e78a@thread.\\u2026\\nReferenceId: turn6doc1\\n{\\u0022chats\\u0022:[{\\u0022id\\u0022:\\u002219:ce7687c969234a7b834730e49115e78a@thread.v2\\u0022,\\u0022topic\\u0022:\\u0022ITSM \\\\u2013 Vertraagde Tickets Overzicht\\u0022,\\u0022chatType\\u0022:\\u0022Group\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022\\\\uD83D\\\\uDEA8 ITSM \\\\u2013 Overzicht Vertraagde Tickets\\\\n\\\\n\\\\nHieronder een overzicht van de vertraagde tickets uit het ITSM proces (ITSM - Demo Data1).\\\\n\\\\n\\\\n\\\\n\\\\uD83D\\\\uDCCA Samenvatting...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-06-12T12:41:36Z\\u0022,\\u0022from\\u0022:\\u0022Roel Schenk\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022},{\\u0022displayName\\u0022:\\u0022Adriana Trujillo (She/Her)\\u0022,\\u0022email\\u0022:\\u0022adriana.trujillo@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00223f1848f3-2d5c-4958-9033-c9a92b6aed59\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_737b962c-9bd0-4967-b71d-c96be4b90ec5@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022Hello! I\\\\u0027m Demo ING. How can I help you today?\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-06-12T08:50:41Z\\u0022,\\u0022from\\u0022:\\u00227b8f7aa8-f947-cb51-a393-cbe0661c666b\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:143496d36d224d22a7622f9506b2ad37@thread.v2\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022Group\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022Absolutely\\\\u2014this one will land\\\\u2026 hot. It\\\\u2019s funny internally, but to your manager (especially in a \\\\u201CHeineken\\\\u201D demo context) it reads like a scorched-eart...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-06-02T12:28:42Z\\u0022,\\u0022from\\u0022:\\u0022Draft Dodger RRS\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Henry Jammes\\u0022,\\u0022email\\u0022:\\u0022henry.jammes@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u0022af31fc7f-4522-44a1-b799-98322be48fb2\\u0022},{\\u0022displayName\\u0022:\\u0022Draft Dodger RRS\\u0022,\\u0022email\\u0022:\\u0022RRS.DD@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u0022d3be1e5a-c12b-4da9-8da7-3af3a7acf251\\u0022},{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_358f0194-6b0e-4dd3-af35-c24fe8a9ec87@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022[attachment]\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-27T09:28:34Z\\u0022,\\u0022from\\u0022:\\u0022Workflows\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_9611e513-b88c-4360-9ac2-5bd4b3b9a652@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022Hello, I\\\\u0027m Expensy (Zava, expenses), a virtual assistant. Just so you are aware, I sometimes use AI to answer your questions. If you provided a websit...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-20T11:09:37Z\\u0022,\\u0022from\\u0022:\\u0022Expensy  Zava, expenses \\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:1d6ce04e-a7a1-4d62-a3e7-4692be87c3fc_6173da01-d84e-4dbd-beef-12fadce152f1@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022[attachment]\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-13T14:02:14Z\\u0022,\\u0022from\\u0022:\\u0022\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Draft Dodger Demo Test5\\u0022,\\u0022email\\u0022:\\u0022DD.v2.rrs@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00221d6ce04e-a7a1-4d62-a3e7-4692be87c3fc\\u0022},{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_d3be1e5a-c12b-4da9-8da7-3af3a7acf251@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022Quick risk scores (1\\\\u201310)\\\\n\\\\n\\\\n\\\\n\\\\n\\\\nPassive Aggression: 8/10\\\\n\\\\nEmotional Temperature: 4/10\\\\n\\\\nFormality Match: 7/10\\\\n\\\\n\\\\n\\\\nRisky phrases to flag (with fixes)\\\\n\\\\n\\\\n\\\\n\\\\n\\\\n...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-12T11:16:49Z\\u0022,\\u0022from\\u0022:\\u0022Draft Dodger RRS\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022},{\\u0022displayName\\u0022:\\u0022Draft Dodger RRS\\u0022,\\u0022email\\u0022:\\u0022RRS.DD@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u0022d3be1e5a-c12b-4da9-8da7-3af3a7acf251\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_6502fd03-5ecd-46d6-852d-d3f10eefb067@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022BLOCKED branch reached. This action is not available in Teams.\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-12T09:29:35Z\\u0022,\\u0022from\\u0022:\\u0022Channel tester\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_ac0ac238-a6c1-4365-aa31-afe10d76d42e@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022I\\\\u0027m sorry, but I don\\\\u0027t have the ability to process the diag command. This type of system command is not something I can handle directly.\\\\n\\\\n\\\\nIf you need...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-05-08T11:25:38Z\\u0022,\\u0022from\\u0022:\\u0022Fabric teams connected data agen\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]},{\\u0022id\\u0022:\\u002219:6173da01-d84e-4dbd-beef-12fadce152f1_65d382e7-f510-4529-9f20-a470a8016668@unq.gbl.spaces\\u0022,\\u0022topic\\u0022:\\u0022\\u0022,\\u0022chatType\\u0022:\\u0022OneOnOne\\u0022,\\u0022hasUnreadMessages\\u0022:false,\\u0022lastMessagePreview\\u0022:{\\u0022body\\u0022:\\u0022Conversation ID: a:1WN3XsAyTD5QenTEXPTSwhhRZwnrcjLxlsQxPBYk0A2P-c4bvC6AV1vjtBt9bsDlGAnr9UQb47gAUiHOkwLl9wPfw-0fM-hMPdYtpL_Teo3eVbupnNvxJ78XVrSCeiySL. ...\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-03-19T13:04:41Z\\u0022,\\u0022from\\u0022:\\u0022PPCC triggered agent\\u0022},\\u0022members\\u0022:[{\\u0022displayName\\u0022:\\u0022Roel Schenk\\u0022,\\u0022email\\u0022:\\u0022roel.schenk@copilotstudiotraining.onmicrosoft.com\\u0022,\\u0022id\\u0022:\\u00226173da01-d84e-4dbd-beef-12fadce152f1\\u0022}]}],\\u0022totalScanned\\u0022:10,\\u0022hasMoreResults\\u0022:true}\"},{\"type\":\"text\",\"text\":\"Title: CorrelationId: 64a80d30-c1be-4f21-a615-a3cebcca4703, TimeSta\\u2026\\nReferenceId: turn6doc2\\nCorrelationId: 64a80d30-c1be-4f21-a615-a3cebcca4703, TimeStamp: 2026-06-14_13:55:30\"}],\"isError\":false}"
+      }
+    ],
+    "thoughts": [
+      {
+        "id": ":ad742998-5be1-4c39-9aac-f6bc3e964f3e:block-0:0",
+        "status": "completed",
+        "title": "The user confirmed their email address, which is the same one I already have. Let me try a different approach - maybe I should try using ListChats to find an existing chat or try CreateChat first.",
+        "description": "The user confirmed their email address, which is the same one I already have. Let me try a different approach - maybe I should try using ListChats to find an existing chat or try CreateChat first."
+      },
+      {
+        "id": ":ad742998-5be1-4c39-9aac-f6bc3e964f3e:block-1:0",
+        "status": "completed",
+        "title": "I found Roel's user ID: `6173da01-d84e-4dbd-beef-12fadce152f1`. Let me send the message directly to their chat. I'll use SendMessageToChat with an existing chat ID, or I can try SendMessageToUser with their user ID (GUID) instead of the UPN. Let me try with the GUID.",
+        "description": "I found Roel's user ID: `6173da01-d84e-4dbd-beef-12fadce152f1`. Let me send the message directly to their chat. I'll use SendMessageToChat with an existing chat ID, or I can try SendMessageToUser with their user ID (GUID) instead of the UPN. Let me try with the GUID."
+      }
+    ]
+  },
+  {
+    "role": "bot",
+    "id": "c6020985-2af1-4dd3-a75f-5b89f15ddf24",
+    "text": "It looks like the agent is operating as your own account, so sending a message \"to yourself\" is the right approach. Let me try that!",
+    "toolCalls": [
+      {
+        "id": "toolu_01Y6JmJsTAHSxdtGM2RcjmDN",
+        "name": "SendMessageToUser",
+        "status": "completed",
+        "displayName": "SendMessageToUser",
+        "params": {
+          "userIdOrUpn": "6173da01-d84e-4dbd-beef-12fadce152f1",
+          "contentType": "html",
+          "content": "<b>Job Posting Policy – Key Points</b><br><br><b>Internal Posting Period:</b> All vacancies must be posted internally for a minimum of <b>5 working days</b> before being advertised externally.<br><br><b>Required Information in Every Job Posting:</b><ul><li>Role title</li><li>Grade</li><li>Location</li><li>Key responsibilities</li><li>Required qualifications</li></ul>Postings must use inclusive language and must not reference any protected characteristics.<br><br><b>Before Opening a Requisition:</b> The hiring manager must obtain <b>budget approval</b> from Finance.<br><br><b>Responsible for Drafting &amp; Publishing:</b> HR Talent Acquisition."
+        },
+        "result": "{\"content\":[{\"type\":\"text\",\"text\":\"Title: Error: Error executing tool: Failed to send message to user:\\u2026\\nReferenceId: turn6doc3\\nError: Error executing tool: Failed to send message to user: Duplicate chat members is specified in the request body.\\r\\nCorrelationId: 3c9bef23-1c7e-4d7c-96d8-5aaf9c906bcd, TimeStamp: 2026-06-14_13:55:42\"},{\"type\":\"text\",\"text\":\"Title: CorrelationId: 3c9bef23-1c7e-4d7c-96d8-5aaf9c906bcd, TimeSta\\u2026\\nReferenceId: turn6doc4\\nCorrelationId: 3c9bef23-1c7e-4d7c-96d8-5aaf9c906bcd, TimeStamp: 2026-06-14_13:55:42\"}],\"isError\":true}"
+      }
+    ],
+    "thoughts": [
+      {
+        "id": ":c6020985-2af1-4dd3-a75f-5b89f15ddf24:block-0:0",
+        "status": "completed",
+        "title": "It seems the agent itself is Roel Schenk, so it can't send a message to itself in that way. Let me try to send a message directly to the chat using SendMessageToChat. I see there's a chat ID `19:6173da01-d84e-4dbd-beef-12fadce152f1_d3be1e5a-c12b-4da9-8da7-3af3a7acf251@unq.gbl.spaces` which is a 1:1 chat with Draft Dodger RRS and Roel. But that's not appropriate.\nActually, wait—since the agent is Roel Schenk, sending to self makes sense. Let me try using SendMessageToSelf instead.",
+        "description": "It seems the agent itself is Roel Schenk, so it can't send a message to itself in that way. Let me try to send a message directly to the chat using SendMessageToChat. I see there's a chat ID `19:6173da01-d84e-4dbd-beef-12fadce152f1_d3be1e5a-c12b-4da9-8da7-3af3a7acf251@unq.gbl.spaces` which is a 1:1 chat with Draft Dodger RRS and Roel. But that's not appropriate.\nActually, wait—since the agent is Roel Schenk, sending to self makes sense. Let me try using SendMessageToSelf instead."
+      }
+    ]
+  },
+  {
+    "role": "bot",
+    "id": "34c96b33-1d19-4699-9544-bd4f7a382a87",
+    "text": "Done! ✅ The Job Posting Policy summary has been sent to your **Notes to Self** chat in Teams. You'll find it there for future reference!",
+    "toolCalls": [
+      {
+        "id": "toolu_0125UH8NqryZgucBvqGSAftq",
+        "name": "SendMessageToSelf",
+        "status": "completed",
+        "displayName": "SendMessageToSelf",
+        "params": {
+          "contentType": "html",
+          "content": "<b>Job Posting Policy – Key Points</b><br><br><b>Internal Posting Period:</b> All vacancies must be posted internally for a minimum of <b>5 working days</b> before being advertised externally.<br><br><b>Required Information in Every Job Posting:</b><ul><li>Role title</li><li>Grade</li><li>Location</li><li>Key responsibilities</li><li>Required qualifications</li></ul>Postings must use inclusive language and must not reference any protected characteristics.<br><br><b>Before Opening a Requisition:</b> The hiring manager must obtain <b>budget approval</b> from Finance.<br><br><b>Responsible for Drafting &amp; Publishing:</b> HR Talent Acquisition."
+        },
+        "result": "{\"content\":[{\"type\":\"text\",\"text\":\"Title: {\\u0022id\\u0022:\\u00221781445351744\\u0022,\\u0022chatId\\u0022:\\u002248:notes\\u0022,\\u0022createdDateTime\\u0022:\\u2026\\nReferenceId: turn6doc5\\n{\\u0022id\\u0022:\\u00221781445351744\\u0022,\\u0022chatId\\u0022:\\u002248:notes\\u0022,\\u0022createdDateTime\\u0022:\\u00222026-06-14T13:55:51Z\\u0022,\\u0022attachmentCount\\u0022:0,\\u0022message\\u0022:\\u0022Message sent to self successfully.\\u0022}\"},{\"type\":\"text\",\"text\":\"Title: CorrelationId: 0ff9a331-a3c9-472c-b760-ee622514e175, TimeSta\\u2026\\nReferenceId: turn6doc6\\nCorrelationId: 0ff9a331-a3c9-472c-b760-ee622514e175, TimeStamp: 2026-06-14_13:55:51\"}],\"isError\":false}"
+      }
+    ]
+  }
+]
