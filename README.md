@@ -196,6 +196,33 @@ flowchart LR
 
 Either alone produces a partial report; both together enable the full cross-reference.
 
+### 📤 Getting these files out of Copilot Studio
+
+Today both files come from the agent's **Test pane** in the Copilot Studio authoring
+session. *(App Insights / telemetry-based export is coming and will be documented here
+soon.)*
+
+**1. Turn on user feedback (one-time)**
+
+- In the authoring session, open the **⋯ (three dots)** menu next to **Publish** in the
+  top-right corner, then choose **Settings**.
+- Go to **Security and access** and toggle **User feedback** on.
+- 👍 **like** / 👎 **dislike** buttons now appear under each agent reply in the test pane.
+
+**2. Download the transcript — `conversation-details.json`**
+
+- Chat with the agent in the test pane, then click 👍 or 👎 on a reply.
+- That reveals a **download conversation details** option → save the
+  `conversation-details.json`. *(This is the Transcript JSON input above.)*
+
+**3. Download the agent build YAML**
+
+- Open the **⋯** menu again → under **Keyboard shortcuts** use the **Download** button →
+  this exports the agent's build definition (the `BotDefinition` YAML).
+
+Drop both files into the app (or pass them to the CLI) to unlock the full
+cross-referenced report.
+
 ---
 
 ## 📂 Project structure
