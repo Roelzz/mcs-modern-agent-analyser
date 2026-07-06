@@ -4,6 +4,7 @@ structures the Reflex layer can `rx.foreach` over.
 Pure module (dataclasses only) so it is unit-testable without Reflex.
 """
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -13,6 +14,7 @@ from renderer import render_sequence_diagram
 
 from analysis import PROVIDER_META, build_tool_hierarchy, tool_failed
 from config import CREDIT_ESTIMATOR_URL
+from tool_diagnosis import describe, diagnose, is_failure
 
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _ACTION_PARAM_KEYS = {"content", "contenttype", "memberupns", "useridorupn", "recipient", "chatid", "messageid"}
@@ -158,9 +160,12 @@ class ToolCallVM:
     kind: str = "other"  # retrieval / action / skill / other
     name: str = ""
     display_name: str = ""
+    call_id: str = ""
     status: str = ""
     failed: bool = False
     icon: str = "wrench"
+    # deep-dive: plain-language "what happened" for EVERY call (success or fail)
+    activity_summary: str = ""
     # retrieval
     query: str = ""
     result_count: int = 0
@@ -171,9 +176,21 @@ class ToolCallVM:
     content_type: str = ""
     content_html: str = ""
     content_text: str = ""
-    # generic
+    # generic — full, untruncated
     params: list[KV] = field(default_factory=list)
     raw_result: str = ""
+    # error / diagnosis (failures)
+    has_error: bool = False
+    error: str = ""
+    diagnosis_category: str = ""
+    diagnosis_cause: str = ""
+    diagnosis_fix: str = ""
+    diagnosis_severity: str = ""
+    diagnosis_rule: str = ""
+    diagnosis_evidence: list[str] = field(default_factory=list)
+    # generic, always-present heuristic context (provenance + causal in-turn linkage);
+    # the debugging value for payload-less calls like skill loads.
+    context_lines: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -303,6 +320,7 @@ class ToolFailureVM:
     turn_index: int = 0
     turn_label: str = ""
     name: str = ""
+    call_id: str = ""
     params_summary: str = ""
     error_text: str = ""
     embedded: bool = False
@@ -311,6 +329,18 @@ class ToolFailureVM:
     next_label: str = ""
     icon: str = "circle-x"
     color: str = "red"
+    # heuristic diagnosis (generic engine — always populated for a failure)
+    diagnosis_category: str = ""
+    diagnosis_cause: str = ""
+    diagnosis_fix: str = ""
+    diagnosis_severity: str = ""
+    diagnosis_rule: str = ""
+    diagnosis_evidence: list[str] = field(default_factory=list)
+    # full VM for this failed call (same builder the chat/flat surfaces use) so the
+    # failure row can render the identical universal detail — full params + full
+    # response/error, nothing truncated. Empty default when no match is found.
+    detail: "ToolCallVM" = field(default_factory=lambda: ToolCallVM())
+    has_detail: bool = False
 
 
 @dataclass
@@ -567,6 +597,9 @@ class ReportVM:
     f_info: int = 0
     # tools / actions
     tool_rows: list[ToolRowVM] = field(default_factory=list)
+    # flat list of EVERY tool call (success + fail) across all turns, in order —
+    # drives the generic "All tool calls" drill-down in the Tools & actions tab.
+    tool_calls_all: list[ToolCallVM] = field(default_factory=list)
     skill_loads: list[str] = field(default_factory=list)
     retry_signals: list[str] = field(default_factory=list)
     tool_failures: list[str] = field(default_factory=list)
@@ -750,21 +783,49 @@ def _docs_from_tool(tc: ToolCall, cited_ids: set[str], uncited_ids: set[str]) ->
     return out
 
 
+def _pretty_value(v: object) -> str:
+    """Full, readable string for a param value. JSON-string values (e.g. the ``item``
+    body of an action call) are pretty-printed; dict/list values are JSON-dumped. No
+    truncation — the UI wraps these in scrollable/copyable containers."""
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(v)
+    s = str(v)
+    stripped = s.strip()
+    if stripped[:1] in ("{", "[") and stripped[-1:] in ("}", "]"):
+        try:
+            return json.dumps(json.loads(stripped), indent=2, ensure_ascii=False)
+        except (ValueError, TypeError):
+            return s
+    return s
+
+
 def _tool_to_vm(tc: ToolCall, cited_ids: set[str], uncited_ids: set[str]) -> ToolCallVM:
     kind = classify_tool(tc)
     params = tc.params if isinstance(tc.params, dict) else {}
     content = params.get("content") if isinstance(params.get("content"), str) else ""
     ctype = params.get("contentType") or params.get("contenttype") or ""
     recipient = params.get("userIdOrUpn") or params.get("memberUpns") or params.get("recipient") or ""
-    kv = [KV(key=str(k), value=str(v)[:200]) for k, v in params.items() if str(k).lower() != "content"]
     is_html = "html" in str(ctype).lower()
+    # Full key/value table — every param, exact value, nothing dropped or truncated.
+    # `content` is rendered separately as html/text only when it is an html action body;
+    # otherwise it stays in the generic table so nothing is hidden.
+    drop_keys = {"content"} if (content and is_html) else set()
+    kv = [KV(key=str(k), value=_pretty_value(v)) for k, v in params.items() if str(k) not in drop_keys]
+
+    failed = is_failure(tc)
+    diag = diagnose(tc, siblings=()) if failed else None
     return ToolCallVM(
         kind=kind,
         name=tc.name or "",
         display_name=tc.display_name or tc.name or "",
+        call_id=tc.id or "",
         status=tc.status or "",
         failed=tc.failed,
         icon=_KIND_ICON.get(kind, "wrench"),
+        activity_summary=describe(tc),
         query=tc.query or "",
         result_count=tc.result_count or len(tc.retrieved_docs),
         zero_result=tc.zero_result,
@@ -774,7 +835,15 @@ def _tool_to_vm(tc: ToolCall, cited_ids: set[str], uncited_ids: set[str]) -> Too
         content_html=content if is_html else "",
         content_text="" if is_html else content,
         params=kv,
-        raw_result=(tc.result or "")[:4000],
+        raw_result=tc.result or "",
+        has_error=bool(tc.error and tc.error.strip()) or failed,
+        error=tc.error or "",
+        diagnosis_category=diag.category if diag else "",
+        diagnosis_cause=diag.cause if diag else "",
+        diagnosis_fix=diag.fix if diag else "",
+        diagnosis_severity=diag.severity if diag else "",
+        diagnosis_rule=diag.matched_rule if diag else "",
+        diagnosis_evidence=list(diag.evidence) if diag else [],
     )
 
 
@@ -804,14 +873,120 @@ def _map_citations(text: str, current_docs: list) -> list[CitationVM]:
 # ---------------------------------------------------------------------------
 
 
+# --- Generic, heuristic per-call "Context" derivation (turn-sibling-aware) ---
+# Gives EVERY call real debugging value — even payload-less ones (skill loads)
+# get honest provenance + causal in-turn linkage. Heuristics only; derived purely
+# from the call, its already-built VM, and its turn siblings. No LLM, no new deps.
+
+_DOC_SKILL_HINTS = ("docx", "document", "pdf", "spreadsheet", "xlsx", "image", "analyz")
+
+
+def _skill_category(tc: ToolCall) -> str:
+    """document-processing vs general — mirrors the rule in analysis (code-interpreter skills)."""
+    low = (tc.display_name or "").lower()
+    return "document-processing" if any(h in low for h in _DOC_SKILL_HINTS) else "general"
+
+
+def _call_label(tc: ToolCall) -> str:
+    """Short, human label for a sibling call in the causal summary."""
+    if classify_tool(tc) == "retrieval":
+        return "searched knowledge"
+    return (tc.display_name or tc.name or "call").strip()
+
+
+def _call_outcome(tc: ToolCall) -> str:
+    """Plain outcome token for the causal summary."""
+    if is_failure(tc):
+        return "failed"
+    if classify_tool(tc) == "retrieval":
+        n = tc.result_count if tc.result_count is not None else len(tc.retrieved_docs)
+        if not n or tc.zero_result:
+            return "no results"
+        return f"{n} result{'s' if n != 1 else ''}"
+    return "ok"
+
+
+def _summarize_following(following: list[ToolCall]) -> str:
+    """Compact 'X (outcome), then Y ×N (all failed)' summary of subsequent siblings."""
+    groups: list[list] = []  # [label, count, [outcomes]]
+    for tc in following:
+        label, outcome = _call_label(tc), _call_outcome(tc)
+        if groups and groups[-1][0] == label:
+            groups[-1][1] += 1
+            groups[-1][2].append(outcome)
+        else:
+            groups.append([label, 1, [outcome]])
+    parts: list[str] = []
+    for label, count, outs in groups[:3]:
+        uniq = list(dict.fromkeys(outs))
+        if count > 1:
+            otxt = f"all {uniq[0]}" if len(uniq) == 1 else ", ".join(uniq)
+            parts.append(f"{label} ×{count} ({otxt})")
+        else:
+            parts.append(f"{label} ({outs[0]})")
+    txt = ", then ".join(parts)
+    if len(groups) > 3:
+        txt += ", …"
+    return txt
+
+
+def _derive_context(
+    tv: ToolCallVM, tc: ToolCall, siblings: list[ToolCall], position: int, turn_no: int
+) -> list[str]:
+    """Always-non-empty 'Context' facts for ANY call: provenance, honest empty-state
+    notes, skill nature/category/billing, and causal in-turn linkage."""
+    lines: list[str] = []
+    total = len(siblings)
+    turn = max(turn_no, 1)
+    if total > 1:
+        lines.append(f"Call {position + 1} of {total} in this turn (turn {turn}).")
+    else:
+        lines.append(f"Only tool call in this turn (turn {turn}).")
+
+    has_params = bool(tv.params)
+    has_resp = bool(tv.raw_result) or bool(tv.docs) or bool(tv.content_html) or bool(tv.content_text)
+
+    if tv.kind == "skill":
+        lines.append(
+            "Runtime capability activation — loaded on demand, not declared in the agent YAML. "
+            "Copilot Studio emits no request body or response payload for skill loads."
+        )
+        if _skill_category(tc) == "document-processing":
+            lines.append("Category: document-processing capability.")
+            lines.append("Document-processing skills incur content-processing billing.")
+        else:
+            lines.append("Category: general capability.")
+    else:
+        if not has_params:
+            lines.append("No request parameters were captured for this call.")
+        if not has_resp:
+            lines.append("No response body was captured for this call.")
+
+    following = siblings[position + 1 :]
+    if following:
+        summary = _summarize_following(following)
+        if summary:
+            lines.append("Immediately after: " + summary + ".")
+    return lines
+
+
 def _build_chat(convo: Conversation, cited_ids: set[str], uncited_ids: set[str]) -> list[ChatBlockVM]:
     chat: list[ChatBlockVM] = []
     current_docs: list = []  # docs of the nearest preceding KnowledgeSearch
+    turn_no = 0
     for i, m in enumerate(convo.messages):
         if m.is_user:
+            turn_no += 1
             chat.append(ChatBlockVM(idx=i, kind="user", text=m.text, search_text=(m.text or "").lower()))
             continue
         tool_vms = [_tool_to_vm(tc, cited_ids, uncited_ids) for tc in m.tool_calls]
+        # Guarantee a unique, non-empty disclosure key for every call (drives the
+        # per-call / per-section drop-down open-sets in State — empty ids would collide).
+        # Same pass derives each call's always-on Context (turn-sibling-aware).
+        for pos, tv in enumerate(tool_vms):
+            if not tv.call_id:
+                tv.call_id = f"tc-{i}-{pos}"
+            tv.context_lines = _derive_context(tv, m.tool_calls[pos], m.tool_calls, pos, turn_no)
         for tc in m.tool_calls:
             if tc.is_knowledge_search and tc.retrieved_docs:
                 current_docs = tc.retrieved_docs
@@ -830,6 +1005,34 @@ def _build_chat(convo: Conversation, cited_ids: set[str], uncited_ids: set[str])
             )
         )
     return chat
+
+
+def _flatten_tool_calls(chat: list[ChatBlockVM]) -> list[ToolCallVM]:
+    """Flatten every agent turn's tool calls into one ordered list.
+
+    Reuses the exact ToolCallVM objects already built for the chat cards, so the
+    Tools-tab drill-down shows identical, full, untruncated data (params, raw
+    result, error, activity summary, diagnosis) and shares the same disclosure
+    keys (call_id / call_id::section) as the chat surface.
+    """
+    out: list[ToolCallVM] = []
+    for b in chat:
+        if b.kind != "agent":
+            continue
+        out.extend(b.tool_calls)
+    return out
+
+
+def _tool_call_index(chat: list[ChatBlockVM]) -> dict[str, ToolCallVM]:
+    """Map real call_id -> ToolCallVM for cross-surface lookups (failure rows)."""
+    idx: dict[str, ToolCallVM] = {}
+    for b in chat:
+        if b.kind != "agent":
+            continue
+        for tv in b.tool_calls:
+            if tv.call_id:
+                idx.setdefault(tv.call_id, tv)
+    return idx
 
 
 def _turn_doc_count(bot_messages: list[Message]) -> int:
@@ -1369,18 +1572,24 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
 # ---------------------------------------------------------------------------
 
 
-def _build_tool_failures(report: AnalysisReport) -> list[ToolFailureVM]:
+def _build_tool_failures(
+    report: AnalysisReport, call_index: dict[str, ToolCallVM] | None = None
+) -> list[ToolFailureVM]:
     tf = report.tool_failures
     if tf is None:
         return []
+    call_index = call_index or {}
     rows: list[ToolFailureVM] = []
     for f in tf.failures:
         label, icon, color = _RECOVERY_STYLE.get(f.recovery, ("", "circle-x", "red"))
+        d = f.diagnosis
+        detail = call_index.get(f.call_id or "")
         rows.append(
             ToolFailureVM(
                 turn_index=f.turn_index,
                 turn_label=f"Turn {f.turn_index}",
                 name=f.name,
+                call_id=f.call_id or "",
                 params_summary=f.params_summary,
                 error_text=f.error_text,
                 embedded=f.embedded,
@@ -1389,6 +1598,14 @@ def _build_tool_failures(report: AnalysisReport) -> list[ToolFailureVM]:
                 next_label=f"→ {f.next_action}" if f.next_action else "",
                 icon=icon,
                 color=color,
+                diagnosis_category=d.category if d else "",
+                diagnosis_cause=d.cause if d else "",
+                diagnosis_fix=d.fix if d else "",
+                diagnosis_severity=d.severity if d else "",
+                diagnosis_rule=d.matched_rule if d else "",
+                diagnosis_evidence=list(d.evidence) if d else [],
+                detail=detail if detail is not None else ToolCallVM(),
+                has_detail=detail is not None,
             )
         )
     return rows
@@ -1799,6 +2016,15 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
         vm.chat = _build_chat(convo, cited_ids, uncited_ids)
         vm.turns = _build_turns(convo)
         vm.mermaid = _strip_fence(render_sequence_diagram(convo, vm.agent_name))
+        # flat, ordered list of EVERY tool call (success + fail) reusing the chat VMs,
+        # so the Tools & actions tab can drill into any call with full untruncated data.
+        vm.tool_calls_all = _flatten_tool_calls(vm.chat)
+        # backfill each failure row with its full call VM (params + response/error),
+        # matched by real call_id, so the failures card reuses the universal renderer.
+        if report.tool_failures is not None:
+            vm.tool_failure_rows = _build_tool_failures(
+                report, _tool_call_index(vm.chat)
+            )
 
     return vm
 

@@ -655,13 +655,19 @@ def render_tool_failures(report: AnalysisReport) -> str:
         f"- **Failures:** {tf.total_failures}  |  **Hidden behind a 'completed' status:** {tf.embedded_failures}  "
         f"|  **Recovered:** {tf.recovered}  |  **Gave up:** {tf.gave_up}",
         "",
-        "| Turn | Tool | Error | Recovery | Next action |",
-        "| --- | --- | --- | --- | --- |",
+        "| Turn | Tool | Category | Error | Diagnosis (cause → fix) | Recovery | Next action |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for f in tf.failures:
+        dg = f.diagnosis
+        category = _cell(dg.category) if dg else ""
+        if dg and (dg.cause or dg.fix):
+            diag_cell = _cell(f"{dg.cause} → Fix: {dg.fix}".strip(" →"))
+        else:
+            diag_cell = ""
         out.append(
-            f"| {f.turn_index} | {_cell(f.name)} | {_cell(f.error_text)} "
-            f"| {label.get(f.recovery, f.recovery)} | {_cell(f.next_action)} |"
+            f"| {f.turn_index} | {_cell(f.name)} | {category} | {_cell(f.error_text)} "
+            f"| {diag_cell} | {label.get(f.recovery, f.recovery)} | {_cell(f.next_action)} |"
         )
     return "\n".join(out)
 

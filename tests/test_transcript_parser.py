@@ -5,11 +5,17 @@ import pytest
 from transcript_parser import parse_knowledge_result, parse_transcript
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_transcript.json"
+CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
 
 
 @pytest.fixture(scope="module")
 def convo():
     return parse_transcript(FIXTURE)
+
+
+@pytest.fixture(scope="module")
+def fail_convo():
+    return parse_transcript(CONNECTOR_FAIL)
 
 
 def test_message_counts(convo):
@@ -71,3 +77,41 @@ def test_parse_knowledge_result_zero():
 def test_parse_knowledge_result_empty():
     docs, count, zero = parse_knowledge_result(None)
     assert docs == [] and count is None and zero is False
+
+
+# --------------------------------------------------------------------------- #
+# Connector-failure fixture: the parser must capture `error`, not drop it.     #
+# --------------------------------------------------------------------------- #
+
+
+def test_connector_fail_counts(fail_convo):
+    assert len(fail_convo.messages) == 7
+    assert len(fail_convo.turns) == 4
+    assert len(fail_convo.tool_calls) == 8
+
+
+def test_connector_fail_error_captured(fail_convo):
+    tcs = fail_convo.tool_calls
+    # Successful calls carry no error text.
+    assert all(not (tcs[i].error or "") for i in range(5))
+    # The three failed writes each carry a non-empty connector error payload.
+    for i in (5, 6, 7):
+        assert tcs[i].failed is True
+        assert tcs[i].error
+        assert "Connector returned" in tcs[i].error
+
+
+def test_connector_fail_error_untruncated(fail_convo):
+    # The passed-in-field failure error is >200 chars — proves ingest keeps it whole.
+    err = fail_convo.tool_calls[6].error
+    assert err is not None
+    assert len(err) > 200
+    assert "dataset" in err
+    assert "could not be found" in err
+
+
+def test_connector_fail_payload_property(fail_convo):
+    tcs = fail_convo.tool_calls
+    # payload prefers result on success, error on failure.
+    assert tcs[4].payload == tcs[4].result
+    assert tcs[5].payload == tcs[5].error

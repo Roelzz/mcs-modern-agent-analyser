@@ -1,0 +1,73 @@
+# Named-signature refinement rules for tool_diagnosis.diagnose().
+#
+# These are an OPTIONAL sharpening layer. The generic tiers (HTTP status, embedded
+# JSON, placeholders, param echoes, signal words, cross-call behaviour) already
+# produce a full diagnosis for any tool/error without this file. A rule here only
+# overrides the wording (category/cause/fix) when its signature matches — the first
+# matching rule wins; order them specific-first, broad fallback last.
+#
+# Rule shape:
+#   - id: short-stable-id
+#     when:
+#       name_regex:  <regex matched against the tool name>      (optional)
+#       error_regex: <regex matched against the error/result>   (optional)
+#       status:      <exact HTTP status int>                     (optional)
+#       param_present: <param key that must be present>          (optional)
+#       param_absent:  <param key that must be absent>           (optional)
+#     category: one of the fixed category set
+#     cause: plain-language explanation
+#     fix:   plain-language remediation
+#     severity: error | warning | info   (optional, default error)
+
+rules:
+  - id: sharepoint-site-address-placeholder
+    when:
+      error_regex: "Site Address ['\"]?\\{[A-Za-z_]\\w*\\}"
+    category: configuration
+    cause: >
+      The SharePoint Site Address is still the literal placeholder token from the
+      template — it was never bound to a real site URL, so the connector had no valid
+      target. This is a connection/environment configuration gap, not a bad request.
+    fix: >
+      Open the connector action's connection and set the Site Address to the real
+      SharePoint site URL (or map the environment variable that supplies it). The
+      value lives in the connection configuration, not in the tool's input parameters.
+    severity: error
+
+  - id: from-policy-governance
+    when:
+      error_regex: "\"fromPolicy\"\\s*:\\s*true"
+    category: configuration
+    cause: >
+      The failure originated from a connection/environment policy (fromPolicy=true) —
+      the value the connector used comes from governed configuration, so passing it in
+      the request body cannot fix it.
+    fix: >
+      Correct the value in the connection or environment (policy-controlled), then
+      retry. Do not try to override it through the tool's parameters.
+    severity: error
+
+  - id: passed-in-field-not-found
+    when:
+      error_regex: "passed-in field .{0,80}? could not be found"
+    category: parameter-schema
+    cause: >
+      A parameter was sent that the connector action's schema does not define, so it
+      was rejected. The value belongs to the connection/configuration, not the request
+      body — supplying it as a field does not match the action's contract.
+    fix: >
+      Remove the unrecognised field from the call and set that value in the connection
+      configuration instead; only send parameters the action actually declares.
+    severity: error
+
+  - id: connector-http-4xx-fallback
+    when:
+      error_regex: "Connector returned\\s+4\\d\\d"
+    category: validation
+    cause: >
+      The connector rejected the request with a 4xx client error — the request as
+      built was not acceptable to the target service.
+    fix: >
+      Review the full error body for the specific reason, then correct the parameters,
+      body, or connection configuration accordingly.
+    severity: error

@@ -106,3 +106,57 @@ def test_graceful_degradation_yaml_only():
     assert report.overview is None
     assert report.agent is not None
     assert any(f.title == "No transcript provided" for f in report.findings)
+
+
+# --------------------------------------------------------------------------- #
+# Connector-failure transcript: analysis must surface full errors + diagnosis #
+# --------------------------------------------------------------------------- #
+
+CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
+
+
+@pytest.fixture(scope="module")
+def fail_report():
+    return analyze(None, parse_transcript(CONNECTOR_FAIL))
+
+
+def test_fail_overview(fail_report):
+    o = fail_report.overview
+    assert o.turn_count == 4
+    assert o.tool_call_count == 8
+    assert o.failed_tool_count == 3
+
+
+def test_fail_tool_failures_present(fail_report):
+    tfa = fail_report.tool_failures
+    assert tfa is not None
+    assert tfa.total_failures == 3
+    assert tfa.embedded_failures == 0
+    assert len(tfa.failures) == 3
+
+
+def test_fail_error_text_untruncated(fail_report):
+    # Old code capped error_text at 160 chars; the passed-in-field row is >200.
+    lengths = [len(f.error_text or "") for f in fail_report.tool_failures.failures]
+    assert max(lengths) > 200
+    assert all(n > 0 for n in lengths)
+
+
+def test_fail_each_row_carries_diagnosis_and_call_id(fail_report):
+    for f in fail_report.tool_failures.failures:
+        assert f.call_id  # exact tool-call id surfaced
+        assert f.diagnosis is not None
+        assert f.diagnosis.category
+        assert f.diagnosis.cause and f.diagnosis.fix
+
+
+def test_fail_categories_are_sharp(fail_report):
+    cats = {f.diagnosis.category for f in fail_report.tool_failures.failures}
+    assert "configuration" in cats
+    assert "parameter-schema" in cats
+
+
+def test_fail_findings_include_failure(fail_report):
+    # A failure-related finding is emitted for the connector errors.
+    titles = " ".join(f.title.lower() for f in fail_report.findings)
+    assert "fail" in titles or "error" in titles

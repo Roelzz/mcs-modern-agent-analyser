@@ -272,42 +272,294 @@ def _action_body(tc) -> rx.Component:
             rx.box(rx.text(tc.content_text, size="1"), padding="10px", background="var(--gray-a2)", border_radius="8px"),
             rx.fragment(),
         ),
-        rx.cond(tc.params.length() > 0, _kv_table(tc.params), rx.fragment()),
         spacing="2",
         width="100%",
     )
 
 
-def tool_call_card(tc) -> rx.Component:
+def _mono_block(text, *, color: str = "var(--gray-12)", bg: str = "var(--gray-a3)") -> rx.Component:
+    """Full, untruncated monospace body in a scrollable box with a Copy button."""
     return rx.box(
         rx.hstack(
+            rx.spacer(),
+            rx.button(
+                rx.icon("copy", size=12),
+                "Copy",
+                on_click=rx.set_clipboard(text),
+                variant="soft",
+                size="1",
+            ),
+            width="100%",
+        ),
+        rx.box(
+            rx.text(
+                text,
+                size="1",
+                style={"white_space": "pre-wrap", "word_break": "break-word", "font_family": "monospace"},
+                color=color,
+            ),
+            max_height="340px",
+            overflow="auto",
+            width="100%",
+        ),
+        background=bg,
+        border="1px solid var(--gray-a5)",
+        border_radius="8px",
+        padding="8px 10px",
+        width="100%",
+    )
+
+
+def _section_drawer(cid, section: str, title: str, icon: str, body, *, accent: str = "gray") -> rx.Component:
+    """Level-2 disclosure: a collapsible sub-section inside an expanded tool call.
+    Keyed on ``call_id::section`` in State.tool_sections_open."""
+    key = cid + "::" + section
+    is_open = State.tool_sections_open.contains(key)
+    return rx.box(
+        rx.hstack(
+            rx.icon(rx.cond(is_open, "chevron-down", "chevron-right"), size=14, color="var(--gray-9)"),
+            rx.icon(icon, size=13, color=f"var(--{accent}-9)"),
+            rx.text(title, size="1", weight="medium"),
+            rx.spacer(),
+            spacing="2",
+            align="center",
+            width="100%",
+            cursor="pointer",
+            on_click=lambda: State.toggle_tool_section(key),
+        ),
+        rx.cond(
+            is_open,
+            rx.box(body, margin_top="6px", padding_left="20px", width="100%"),
+            rx.fragment(),
+        ),
+        width="100%",
+        padding="6px 8px",
+        border_radius="6px",
+        background="var(--gray-a2)",
+    )
+
+
+def _diagnosis_panel(tc) -> rx.Component:
+    """Heuristic diagnosis: category + cause + fix + auditable evidence."""
+    return rx.vstack(
+        rx.hstack(
+            rx.badge(tc.diagnosis_category, color_scheme="red", variant="solid", size="1"),
+            rx.cond(
+                tc.diagnosis_severity != "",
+                rx.badge(tc.diagnosis_severity, variant="soft", color_scheme="amber", size="1"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                tc.diagnosis_rule != "",
+                rx.badge("rule: " + tc.diagnosis_rule, variant="outline", color_scheme="gray", size="1"),
+                rx.badge("generic heuristic", variant="outline", color_scheme="gray", size="1"),
+            ),
+            spacing="2",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            tc.diagnosis_cause != "",
+            rx.hstack(
+                rx.text("Cause:", size="1", weight="bold", color_scheme="red", flex_shrink="0"),
+                rx.text(tc.diagnosis_cause, size="1"),
+                spacing="2",
+                align="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            tc.diagnosis_fix != "",
+            rx.hstack(
+                rx.text("Fix:", size="1", weight="bold", color_scheme="grass", flex_shrink="0"),
+                rx.text(tc.diagnosis_fix, size="1"),
+                spacing="2",
+                align="start",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            tc.diagnosis_evidence.length() > 0,
+            rx.vstack(
+                rx.text("Evidence", size="1", weight="medium", color_scheme="gray"),
+                rx.foreach(
+                    tc.diagnosis_evidence,
+                    lambda e: rx.text(
+                        "• " + e,
+                        size="1",
+                        color_scheme="gray",
+                        style={"font_family": "monospace", "word_break": "break-word"},
+                    ),
+                ),
+                spacing="1",
+                width="100%",
+                align="start",
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        align="start",
+    )
+
+
+def _response_body(tc) -> rx.Component:
+    """Kind-aware pretty response preview + the full raw response body."""
+    return rx.vstack(
+        rx.match(
+            tc.kind,
+            ("retrieval", _retrieval_body(tc)),
+            ("action", _action_body(tc)),
+            rx.fragment(),
+        ),
+        rx.cond(tc.raw_result != "", _mono_block(tc.raw_result), rx.fragment()),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _tool_call_detail(tc) -> rx.Component:
+    """The universal Level-2 detail stack for ANY tool call (success or fail), reused
+    verbatim in the chat card, the Tools-tab "All tool calls" list, and each failure
+    row. Renders call id + nested drop-downs: What happened / Request params / Response
+    body / Error / Diagnosis — all full, nothing truncated, no per-tool special-casing.
+    Ungated (the caller decides when to show it)."""
+    has_resp = (
+        (tc.raw_result != "")
+        | (tc.docs.length() > 0)
+        | (tc.content_html != "")
+        | (tc.content_text != "")
+    )
+    return rx.vstack(
+        rx.cond(
+            tc.call_id != "",
+            rx.hstack(
+                rx.text("call id", size="1", color_scheme="gray"),
+                rx.code(tc.call_id, size="1"),
+                rx.button(
+                    rx.icon("copy", size=11),
+                    on_click=rx.set_clipboard(tc.call_id),
+                    variant="ghost",
+                    size="1",
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.fragment(),
+        ),
+        _section_drawer(
+            tc.call_id,
+            "what",
+            "What happened",
+            "info",
+            rx.text(tc.activity_summary, size="1", style={"white_space": "pre-wrap"}),
+            accent="blue",
+        ),
+        rx.cond(
+            tc.context_lines.length() > 0,
+            _section_drawer(
+                tc.call_id,
+                "ctx",
+                "Context",
+                "compass",
+                rx.vstack(
+                    rx.foreach(
+                        tc.context_lines,
+                        lambda ln: rx.text("• " + ln, size="1", style={"white_space": "pre-wrap"}),
+                    ),
+                    spacing="1",
+                    width="100%",
+                    align="start",
+                ),
+                accent="violet",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            tc.params.length() > 0,
+            _section_drawer(tc.call_id, "params", "Request / parameters", "braces", _kv_table(tc.params)),
+            rx.fragment(),
+        ),
+        rx.cond(
+            has_resp,
+            _section_drawer(tc.call_id, "resp", "Response body", "file-text", _response_body(tc), accent="grass"),
+            rx.fragment(),
+        ),
+        rx.cond(
+            tc.has_error,
+            _section_drawer(
+                tc.call_id,
+                "err",
+                "Error",
+                "circle-x",
+                _mono_block(tc.error, color="var(--red-11)", bg="var(--red-a2)"),
+                accent="red",
+            ),
+            rx.fragment(),
+        ),
+        rx.cond(
+            tc.failed,
+            _section_drawer(tc.call_id, "diag", "Diagnosis", "stethoscope", _diagnosis_panel(tc), accent="amber"),
+            rx.fragment(),
+        ),
+        spacing="2",
+        width="100%",
+        margin_top="8px",
+        align="start",
+    )
+
+
+def tool_call_card(tc, idx) -> rx.Component:
+    """Level-1 per-call disclosure. Collapsed header = at-a-glance summary; expanding
+    reveals the universal `_tool_call_detail` stack (What happened / Params / Response /
+    Error / Diagnosis). Every tool kind gets the same detail — transparency never
+    depends on the tool type."""
+    is_open = State.tool_open.contains(tc.call_id)
+    return rx.box(
+        # --- clickable header (Level 1) ---
+        rx.hstack(
+            rx.icon(rx.cond(is_open, "chevron-down", "chevron-right"), size=16, color="var(--gray-10)"),
+            rx.text(f"#{idx + 1}", size="1", color_scheme="gray", weight="medium"),
             rx.icon(tc.icon, size=15, color="var(--gray-11)"),
             rx.text(tc.display_name, size="2", weight="bold"),
             rx.badge(tc.kind, color_scheme=_KIND_COLOR.get(tc.kind, "gray"), variant="soft", size="1"),
-            rx.spacer(),
             rx.badge(
                 rx.cond(tc.status != "", tc.status, "—"),
                 color_scheme=rx.cond(tc.failed, "red", "gray"),
                 variant=rx.cond(tc.failed, "solid", "soft"),
                 size="1",
             ),
+            rx.cond(
+                tc.failed & (tc.diagnosis_category != ""),
+                rx.badge(tc.diagnosis_category, color_scheme="red", variant="soft", size="1"),
+                rx.fragment(),
+            ),
+            rx.spacer(),
             spacing="2",
             align="center",
             width="100%",
             wrap="wrap",
+            cursor="pointer",
+            on_click=lambda: State.toggle_tool(tc.call_id),
         ),
-        rx.box(
-            rx.match(
-                tc.kind,
-                ("retrieval", _retrieval_body(tc)),
-                ("action", _action_body(tc)),
-                ("skill", rx.text("Skill invoked.", size="1", color_scheme="gray")),
-                rx.cond(tc.params.length() > 0, _kv_table(tc.params), rx.fragment()),
-            ),
-            margin_top="8px",
+        # one-line "what happened" summary, always visible under the header
+        rx.cond(
+            tc.activity_summary != "",
+            rx.text(tc.activity_summary, size="1", color_scheme="gray", margin_top="4px", margin_left="24px"),
+            rx.fragment(),
+        ),
+        # --- expanded detail (Level 2 nested drop-downs) ---
+        rx.cond(
+            is_open,
+            _tool_call_detail(tc),
+            rx.fragment(),
         ),
         padding="12px 14px",
         border="1px solid var(--gray-a5)",
+        border_left=rx.cond(tc.failed, "3px solid var(--red-9)", "1px solid var(--gray-a5)"),
         border_radius="10px",
         background="var(--gray-a2)",
         width="100%",
@@ -358,7 +610,12 @@ def chat_bubble(b) -> rx.Component:
         rx.cond(user, rx.fragment(), _thoughts_block(b)),
         rx.cond(
             b.tool_calls.length() > 0,
-            rx.vstack(rx.foreach(b.tool_calls, tool_call_card), spacing="2", width="100%", margin_top="8px"),
+            rx.vstack(
+                rx.foreach(b.tool_calls, lambda tc, i: tool_call_card(tc, i)),
+                spacing="2",
+                width="100%",
+                margin_top="8px",
+            ),
             rx.fragment(),
         ),
         rx.cond(
@@ -782,10 +1039,21 @@ def knowledge_effectiveness_block() -> rx.Component:
 
 
 def tool_failure_row(f) -> rx.Component:
+    """Disclosure row for a failed tool. Collapsed = tool + category + recovery badge;
+    expanding reveals plain-language cause + fix + full error + evidence. Keyed on
+    'fail::call_id' in State.tool_open (seeded open by default)."""
+    key = "fail::" + f.call_id
+    is_open = State.tool_open.contains(key)
     return rx.box(
         rx.hstack(
+            rx.icon(rx.cond(is_open, "chevron-down", "chevron-right"), size=14, color="var(--gray-10)"),
             rx.icon(f.icon, size=15, color=f"var(--{f.color}-9)", flex_shrink="0"),
             rx.code(f.name, size="1"),
+            rx.cond(
+                f.diagnosis_category != "",
+                rx.badge(f.diagnosis_category, color_scheme="red", variant="soft", size="1"),
+                rx.fragment(),
+            ),
             rx.cond(f.embedded, rx.badge("hidden by status", variant="soft", color_scheme="amber", size="1"), rx.fragment()),
             rx.spacer(),
             rx.badge(f.recovery_label, variant="soft", color_scheme=f.color, size="1"),
@@ -793,14 +1061,104 @@ def tool_failure_row(f) -> rx.Component:
             align="center",
             width="100%",
             wrap="wrap",
+            cursor="pointer",
+            on_click=lambda: State.toggle_tool(key),
         ),
-        rx.cond(f.params_summary != "", rx.text(f.params_summary, size="1", color_scheme="gray", margin_top="4px"), rx.fragment()),
         rx.cond(
-            f.error_text != "",
-            rx.text(f.error_text, size="1", font_family="monospace", color="var(--red-11)", margin_top="6px"),
+            is_open,
+            rx.cond(
+                f.has_detail,
+                # Full parity: the SAME universal detail stack rendered in the chat card
+                # and the Tools-tab "All tool calls" list — call id + What happened +
+                # full Request params + full Response body + full Error + Diagnosis.
+                # Nothing truncated, no per-tool special-casing.
+                rx.vstack(
+                    _tool_call_detail(f.detail),
+                    rx.cond(
+                        f.next_label != "",
+                        rx.text(f.next_label, size="1", color_scheme="grass", margin_top="6px"),
+                        rx.fragment(),
+                    ),
+                    spacing="1",
+                    width="100%",
+                    margin_top="8px",
+                    margin_left="20px",
+                    align="start",
+                ),
+                # Fallback for a failure with no matching call VM: original cause/fix/error.
+                rx.vstack(
+                    rx.cond(
+                        f.call_id != "",
+                        rx.hstack(
+                            rx.text("call id", size="1", color_scheme="gray"),
+                            rx.code(f.call_id, size="1"),
+                            rx.button(
+                                rx.icon("copy", size=11),
+                                on_click=rx.set_clipboard(f.call_id),
+                                variant="ghost",
+                                size="1",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        f.diagnosis_cause != "",
+                        rx.hstack(
+                            rx.text("Cause:", size="1", weight="bold", color_scheme="red", flex_shrink="0"),
+                            rx.text(f.diagnosis_cause, size="1"),
+                            spacing="2",
+                            align="start",
+                            width="100%",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        f.diagnosis_fix != "",
+                        rx.hstack(
+                            rx.text("Fix:", size="1", weight="bold", color_scheme="grass", flex_shrink="0"),
+                            rx.text(f.diagnosis_fix, size="1"),
+                            spacing="2",
+                            align="start",
+                            width="100%",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        f.error_text != "",
+                        _mono_block(f.error_text, color="var(--red-11)", bg="var(--red-a2)"),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        f.diagnosis_evidence.length() > 0,
+                        rx.vstack(
+                            rx.text("Evidence", size="1", weight="medium", color_scheme="gray"),
+                            rx.foreach(
+                                f.diagnosis_evidence,
+                                lambda e: rx.text(
+                                    "• " + e,
+                                    size="1",
+                                    color_scheme="gray",
+                                    style={"font_family": "monospace", "word_break": "break-word"},
+                                ),
+                            ),
+                            spacing="1",
+                            width="100%",
+                            align="start",
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(f.next_label != "", rx.text(f.next_label, size="1", color_scheme="grass"), rx.fragment()),
+                    spacing="2",
+                    width="100%",
+                    margin_top="8px",
+                    margin_left="20px",
+                    align="start",
+                ),
+            ),
             rx.fragment(),
         ),
-        rx.cond(f.next_label != "", rx.text(f.next_label, size="1", color_scheme="grass", margin_top="4px"), rx.fragment()),
         padding="12px 14px",
         border="1px solid var(--gray-a5)",
         border_left=f"3px solid var(--{f.color}-9)",
@@ -987,11 +1345,68 @@ def artifacts_block() -> rx.Component:
     )
 
 
+def all_tool_calls_block() -> rx.Component:
+    """The complete, generic per-call inspector for the Tools & actions tab: every tool
+    call (success + fail), each expandable to its full params + response + error +
+    diagnosis via the SAME `_tool_call_detail` renderer used in chat. Failed calls are
+    seeded open; Expand-all / Collapse-all toggle every call at once."""
+    return rx.cond(
+        State.tool_calls_all.length() > 0,
+        card(
+            rx.hstack(
+                section_title("All tool calls", "list"),
+                rx.badge(
+                    State.tool_calls_all.length().to_string() + " calls",
+                    color_scheme="gray",
+                    variant="soft",
+                    size="1",
+                ),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("chevrons-down-up", size=13),
+                    "Collapse all",
+                    on_click=State.collapse_all_tools,
+                    variant="soft",
+                    color_scheme="gray",
+                    size="1",
+                ),
+                rx.button(
+                    rx.icon("chevrons-up-down", size=13),
+                    "Expand all",
+                    on_click=State.expand_all_tools,
+                    variant="soft",
+                    color_scheme="grass",
+                    size="1",
+                ),
+                align="center",
+                width="100%",
+                wrap="wrap",
+                spacing="2",
+            ),
+            rx.text(
+                "Every tool call in this conversation, with full request parameters and "
+                "complete responses. Failed calls open automatically.",
+                size="1",
+                color_scheme="gray",
+                margin_top="6px",
+            ),
+            rx.vstack(
+                rx.foreach(State.tool_calls_all, tool_call_card),
+                spacing="2",
+                width="100%",
+                margin_top="12px",
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
 def tools_panel() -> rx.Component:
     return rx.cond(
         (State.tool_rows.length() > 0) | State.has_artifacts,
         rx.vstack(
             card(section_title("Tool & action usage", "wrench"), rx.box(_tool_table(), margin_top="12px")),
+            all_tool_calls_block(),
             artifacts_block(),
             tool_failures_block(),
             efficiency_block(),

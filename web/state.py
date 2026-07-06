@@ -44,6 +44,7 @@ from web.view_models import (
     SkillUseVM,
     SourceEffVM,
     TimelineTurnVM,
+    ToolCallVM,
     ToolFailureVM,
     ToolRowVM,
     TurnVM,
@@ -175,6 +176,9 @@ class State(rx.State):
 
     # Tools / actions
     tool_rows: list[ToolRowVM] = []
+    # flat, ordered list of EVERY tool call (success + fail) — drives the generic
+    # "All tool calls" drill-down in the Tools & actions tab.
+    tool_calls_all: list[ToolCallVM] = []
     skill_loads: list[str] = []
     retry_signals: list[str] = []
     tool_failures: list[str] = []
@@ -350,6 +354,12 @@ class State(rx.State):
     active_citation: str = ""
     raw_open: bool = False
     show_thoughts: bool = True
+    # Tool-call transparency drop-downs (two-level disclosure).
+    # tool_open holds expanded call_ids (Level 1); tool_sections_open holds
+    # expanded "call_id::section" keys (Level 2). Seeded on load so failed calls
+    # open their "What happened" + "Diagnosis" panels by default.
+    tool_open: list[str] = []
+    tool_sections_open: list[str] = []
     component_query: str = ""
     active_component: str = ""
 
@@ -466,6 +476,46 @@ class State(rx.State):
 
     def toggle_raw(self):
         self.raw_open = not self.raw_open
+
+    def toggle_tool(self, cid: str):
+        """Expand/collapse a tool-call drop-down (Level 1)."""
+        if cid in self.tool_open:
+            self.tool_open = [x for x in self.tool_open if x != cid]
+        else:
+            self.tool_open = self.tool_open + [cid]
+
+    def toggle_tool_section(self, key: str):
+        """Expand/collapse a per-section drop-down inside a tool call (Level 2).
+        key is 'call_id::section'."""
+        if key in self.tool_sections_open:
+            self.tool_sections_open = [x for x in self.tool_sections_open if x != key]
+        else:
+            self.tool_sections_open = self.tool_sections_open + [key]
+
+    def expand_all_tools(self):
+        """Open every tool call in the flat 'All tool calls' list and every one of its
+        detail sections at once (success + fail). Preserves already-open chat/fail rows."""
+        open_calls = list(self.tool_open)
+        open_sections = list(self.tool_sections_open)
+        for _tc in self.tool_calls_all:
+            _cid = _tc.call_id
+            if _cid not in open_calls:
+                open_calls.append(_cid)
+            for _sec in ("what", "ctx", "params", "resp", "err", "diag"):
+                _key = f"{_cid}::{_sec}"
+                if _key not in open_sections:
+                    open_sections.append(_key)
+        self.tool_open = open_calls
+        self.tool_sections_open = open_sections
+
+    def collapse_all_tools(self):
+        """Collapse every tool call in the flat 'All tool calls' list and its sections.
+        Leaves unrelated keys (chat cards, fail:: rows) untouched."""
+        flat_ids = [_tc.call_id for _tc in self.tool_calls_all]
+        self.tool_open = [c for c in self.tool_open if c not in flat_ids]
+        self.tool_sections_open = [
+            k for k in self.tool_sections_open if k.split("::")[0] not in flat_ids
+        ]
 
     def toggle_thoughts(self):
         self.show_thoughts = not self.show_thoughts
@@ -626,6 +676,7 @@ class State(rx.State):
         self.f_critical, self.f_warning, self.f_info = vm.f_critical, vm.f_warning, vm.f_info
 
         self.tool_rows = vm.tool_rows
+        self.tool_calls_all = vm.tool_calls_all
         self.skill_loads = vm.skill_loads
         self.retry_signals = vm.retry_signals
         self.tool_failures = vm.tool_failures
@@ -753,6 +804,38 @@ class State(rx.State):
         self.tools_used_not_defined = vm.tools_used_not_defined
 
         self.chat = vm.chat
+        # Seed disclosure defaults: a failed call auto-opens itself and ALL of its
+        # detail panels (What happened / Request params / Response body / Error /
+        # Diagnosis) so the connector's real inputs + error body are visible on load
+        # without a click. Successful calls stay fully collapsed. Driven off the flat
+        # tool_calls_all list (same VM objects/ids as the chat cards, so both surfaces
+        # open together).
+        open_calls: list[str] = []
+        open_sections: list[str] = []
+        for _tc in vm.tool_calls_all:
+            _cid = _tc.call_id
+            _failed = getattr(_tc, "failed", False) or getattr(_tc, "has_error", False)
+            _payloadless = not (
+                _tc.params or _tc.raw_result or _tc.docs or _tc.content_html or _tc.content_text
+            )
+            if _failed:
+                open_calls.append(_cid)
+                for _sec in ("what", "ctx", "params", "resp", "err", "diag"):
+                    open_sections.append(f"{_cid}::{_sec}")
+            elif _payloadless:
+                # A payload-less call (e.g. a bare skill load) has nothing in
+                # params/resp/err — its only debugging value is the derived Context,
+                # so open What happened + Context by default.
+                open_calls.append(_cid)
+                open_sections.append(f"{_cid}::what")
+                open_sections.append(f"{_cid}::ctx")
+        # Failure-block rows are keyed "fail::<call_id>" (distinct from chat cards);
+        # seed them open so the cause/fix + embedded detail is visible without a click.
+        for _fr in vm.tool_failure_rows:
+            if getattr(_fr, "call_id", ""):
+                open_calls.append(f"fail::{_fr.call_id}")
+        self.tool_open = open_calls
+        self.tool_sections_open = open_sections
         self.turns = vm.turns
         self.mermaid = vm.mermaid
         self.raw_transcript = vm.raw_transcript
@@ -763,6 +846,7 @@ class State(rx.State):
     def load_sample(self, kind: str = "knowledge"):
         """Load a bundled sample. `knowledge` = agent YAML + transcript;
         `agentic` = transcript only (autonomous Teams agent);
+        `connector` = transcript only (failed SharePoint connector/MCP calls);
         `sandbox` = HR agent that uses the code interpreter + reasoning model;
         `deck` = HR agent that generates a PowerPoint (artifacts + skill gap + grounding pipeline)."""
         self.error = ""
@@ -772,6 +856,10 @@ class State(rx.State):
                 with open("samples/sample_transcript_agentic.json", encoding="utf-8") as fh:
                     self.transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_agentic.json"
+            elif kind == "connector":
+                with open("samples/sample_transcript_connector_fail.json", encoding="utf-8") as fh:
+                    self.transcript_text = fh.read()
+                    self.transcript_name = "sample_transcript_connector_fail.json"
             elif kind == "sandbox":
                 with open("samples/sample_agent_sandbox.yaml", encoding="utf-8") as fh:
                     self.agent_text = fh.read()
@@ -831,6 +919,8 @@ class State(rx.State):
         self.transcript_query = ""
         self.active_citation = ""
         self.raw_open = False
+        self.tool_open = []
+        self.tool_sections_open = []
         self.component_query = ""
         self.active_component = ""
         self.collapsed_nodes = []

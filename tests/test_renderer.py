@@ -63,3 +63,23 @@ def test_render_transcript_only(convo):
     md = render_markdown(report, convo)
     assert "## Conversation overview" in md
     assert "## Agent profile" not in md  # no YAML
+
+
+CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
+
+
+def test_render_tool_failures_has_category_and_diagnosis():
+    from renderer import render_tool_failures
+
+    report = analyze(None, parse_transcript(CONNECTOR_FAIL))
+    md = render_tool_failures(report)
+    assert md  # non-empty for a failing transcript
+    # Category + Diagnosis columns present in the failures table.
+    assert "| Turn | Tool | Category |" in md
+    assert "Diagnosis (cause → fix)" in md
+    # Real diagnosis content rendered, not blanks.
+    assert "configuration" in md
+    assert "parameter-schema" in md
+    assert "Fix:" in md
+    # Full connector error surfaced (untruncated signature text).
+    assert "could not be found" in md
