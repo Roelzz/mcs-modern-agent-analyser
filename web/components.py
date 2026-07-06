@@ -99,7 +99,7 @@ def upload_zone() -> rx.Component:
         rx.hstack(
             rx.button(
                 "Analyse",
-                on_click=[State.handle_upload(rx.upload_files("upload")), State.run_analysis, State.refresh_counter],
+                on_click=[State.handle_upload(rx.upload_files("upload")), State.refresh_counter],
                 disabled=(rx.selected_files("upload").length() == 0) & ~State.can_analyse,
                 color_scheme="grass",
                 size="3",

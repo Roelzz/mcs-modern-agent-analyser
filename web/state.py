@@ -603,6 +603,11 @@ class State(rx.State):
                 continue
             logger.info(f"Uploaded {name} -> {kind}")
         self._set_status()
+        # Run analysis in the same handler so it can't race the upload POST.
+        # (The upload arrives over a separate HTTP channel; a chained
+        # run_analysis event would read empty state on the first click.)
+        if not self.error and (self.transcript_text or self.agent_text):
+            self.run_analysis()
 
     def _set_status(self):
         bits = []
