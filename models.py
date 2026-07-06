@@ -125,6 +125,7 @@ class ToolCall(BaseModel):
     display_name: str | None = None  # "Searched knowledge", "Loaded Skill: analyzing-docx"
     params: dict = Field(default_factory=dict)
     result: str | None = None  # raw result text
+    error: str | None = None  # raw error payload (connector/MCP/action failures)
 
     # Parsed from `result` (best-effort, for KnowledgeSearch-style tools)
     retrieved_docs: list[RetrievedDoc] = Field(default_factory=list)
@@ -143,6 +144,11 @@ class ToolCall(BaseModel):
     @property
     def failed(self) -> bool:
         return (self.status or "").lower() in {"failed", "error"}
+
+    @property
+    def payload(self) -> str | None:
+        """The most relevant raw body for this call: error takes priority, else result."""
+        return self.error or self.result
 
 
 class Thought(BaseModel):
@@ -393,14 +399,29 @@ class CreditEstimate(BaseModel):
 # --- #10 Failed-tool & recovery deep-dive -----------------------------------
 
 
+class ToolDiagnosis(BaseModel):
+    """Heuristic, LLM-free diagnosis of a failed tool call. Produced by the generic
+    tiered engine in ``tool_diagnosis.py`` — always populated for a failure, sharpened
+    (never gated) by named YAML rules."""
+
+    category: str = "unknown"  # authentication / permission / not-found / validation / ...
+    cause: str = ""  # plain-language explanation of what went wrong
+    fix: str = ""  # plain-language suggested remedy
+    severity: str = "error"  # info / warning / error
+    evidence: list[str] = Field(default_factory=list)  # raw signals used (auditable)
+    matched_rule: str | None = None  # id of the named YAML rule that sharpened wording, if any
+
+
 class ToolFailure(BaseModel):
     turn_index: int
     name: str
+    call_id: str | None = None
     params_summary: str = ""
-    error_text: str = ""
+    error_text: str = ""  # full, untruncated error/result body
     embedded: bool = False  # True = status said "completed" but the result carried an error
     recovery: str = "gave-up"  # retried-same / recovered-other-tool / unhandled-but-answered / gave-up
     next_action: str | None = None  # the tool that recovered (if any)
+    diagnosis: ToolDiagnosis | None = None  # heuristic cause + fix
 
 
 class ToolFailureAnalysis(BaseModel):

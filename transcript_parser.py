@@ -79,17 +79,33 @@ def parse_knowledge_result(text: str | None) -> tuple[list[RetrievedDoc], int | 
     return docs, count, zero
 
 
+def _coerce_payload_text(value: object) -> str | None:
+    """A tool-call ``result``/``error`` may arrive as a raw string or as an
+    already-decoded JSON object. Preserve strings; JSON-encode structured payloads
+    so the full body survives to the UI untruncated."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _parse_tool_call(raw: dict) -> ToolCall:
     params = raw.get("params")
-    result = raw.get("result")
-    docs, count, zero = parse_knowledge_result(result if isinstance(result, str) else None)
+    result = _coerce_payload_text(raw.get("result"))
+    error = _coerce_payload_text(raw.get("error"))
+    docs, count, zero = parse_knowledge_result(result)
     return ToolCall(
         id=raw.get("id"),
         name=raw.get("name"),
         status=raw.get("status"),
         display_name=raw.get("displayName"),
         params=params if isinstance(params, dict) else {},
-        result=result if isinstance(result, str) else None,
+        result=result,
+        error=error,
         retrieved_docs=docs,
         result_count=count,
         zero_result=zero,

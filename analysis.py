@@ -80,6 +80,7 @@ from config import (
     heuristic_thresholds,
     reasoning_model_series,
 )
+from tool_diagnosis import diagnose
 
 _THRESH = heuristic_thresholds()
 
@@ -428,7 +429,16 @@ def _code_interpreter_patterns() -> list[tuple[str, re.Pattern]]:
 # Embedded tool error: a call can report status "completed" yet carry an
 # "Error executing tool: …" message in its result text (modern action tools wrap
 # failures in their JSON result). Detect both the explicit-status and embedded forms.
-_TOOL_ERROR_RE = re.compile(r"error executing tool", re.IGNORECASE)
+# Broadened to also catch connector/REST HTTP failures ("Connector returned 400: …")
+# and generic error envelopes, so any tool's failure signature is recognised.
+_TOOL_ERROR_RE = re.compile(
+    r"error executing tool"
+    r"|connector returned\s+\d{3}"
+    r"|\"error\"\s*:"
+    r"|\bexception\b"
+    r"|failed to\b",
+    re.IGNORECASE,
+)
 _ERROR_LINE_RE = re.compile(r"Error executing tool:\s*(.+)", re.IGNORECASE)
 
 
@@ -444,24 +454,36 @@ def _unescape_lite(s: str) -> str:
 
 
 def tool_failed(tc: ToolCall) -> bool:
-    """Semantic failure: an explicit failed status OR an embedded error in the result."""
+    """Semantic failure: an explicit failed status, a captured error payload, OR an
+    embedded error signature in the result text."""
     if tc.failed:
+        return True
+    if tc.error and tc.error.strip():
         return True
     return bool(tc.result and _TOOL_ERROR_RE.search(tc.result))
 
 
 def _is_embedded_failure(tc: ToolCall) -> bool:
-    """A failure that the status field hides behind 'completed'."""
-    return (not tc.failed) and bool(tc.result and _TOOL_ERROR_RE.search(tc.result))
+    """A failure that the status field hides behind 'completed' — the status is not
+    'failed' yet an error payload or an in-result error signature is present."""
+    if tc.failed:
+        return False
+    if tc.error and tc.error.strip():
+        return True
+    return bool(tc.result and _TOOL_ERROR_RE.search(tc.result))
 
 
-def _extract_error_text(tc: ToolCall, limit: int = 180) -> str:
-    if not tc.result:
+def _extract_error_text(tc: ToolCall, limit: int | None = None) -> str:
+    """Full error/result body for a failed call. Prefers the explicit ``error`` payload
+    (a connector failure has ``result=None``), else falls back to the embedded
+    'Error executing tool: …' message inside the result. Untruncated by default
+    (``limit=None``); pass an int limit for compact contexts."""
+    raw = tc.error if (tc.error and tc.error.strip()) else tc.result
+    if not raw:
         return tc.status or "failed"
-    m = _ERROR_LINE_RE.search(tc.result)
-    if m:
-        return _truncate(_unescape_lite(m.group(1)), limit)
-    return _truncate(_unescape_lite(tc.result), limit)
+    m = _ERROR_LINE_RE.search(raw)
+    text = _unescape_lite(m.group(1) if m else raw)
+    return text if limit is None else _truncate(text, limit)
 
 
 def _params_summary(tc: ToolCall, limit: int = 90) -> str:
@@ -1276,11 +1298,13 @@ def analyze_tool_failures(convo: Conversation) -> ToolFailureAnalysis:
                 ToolFailure(
                     turn_index=turn.index,
                     name=tc.name or "(unnamed)",
+                    call_id=tc.id,
                     params_summary=_params_summary(tc),
-                    error_text=_extract_error_text(tc),
+                    error_text=_extract_error_text(tc),  # full, untruncated
                     embedded=_is_embedded_failure(tc),
                     recovery=recovery,
                     next_action=next_action,
+                    diagnosis=diagnose(tc, siblings=calls),
                 )
             )
 
