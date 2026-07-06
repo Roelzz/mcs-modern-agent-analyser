@@ -32,9 +32,3 @@ This repo was built in an in-place `master` session and currently has **zero com
 - Reflex app: dev = ports 3000/8000, prod = single port **2009** (do not change ports).
 - Constraints honored so far: heuristics-only (no LLM), zero new Python deps beyond
   pyyaml. Keep it that way unless Roel approves otherwise.
-
-## Required repo skill
-
-- **Graphify is mandatory in this repo.** For architecture/codebase/content questions,
-  run `/graphify` first (or `graphify query` when `graphify-out/graph.json` already
-  exists) and use graph outputs as the source of truth.
