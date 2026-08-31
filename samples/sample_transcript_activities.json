@@ -1,0 +1,99 @@
+{
+  "activities": [
+    {
+      "type": "trace",
+      "id": "trace-conversation-info",
+      "timestamp": 1751020800,
+      "timestampMs": 1751020800000,
+      "channelId": "pva-studio",
+      "from": { "id": "copilot-studio", "role": 0 },
+      "valueType": "ConversationInfo",
+      "value": { "conversationId": "conv-activities-001", "locale": "en-US" }
+    },
+    {
+      "type": "event",
+      "id": "event-start",
+      "name": "startConversation",
+      "timestampMs": 1751020800100,
+      "channelId": "pva-studio",
+      "from": { "id": "copilot-studio", "role": 0 }
+    },
+    {
+      "type": "message",
+      "id": "msg-greeting",
+      "timestampMs": 1751020800500,
+      "channelId": "pva-studio",
+      "from": { "id": "copilot-studio", "role": 0 },
+      "text": "Hi! I'm the HR assistant. Ask me anything about leave policy."
+    },
+    {
+      "type": "message",
+      "id": "msg-user-1",
+      "timestampMs": 1751020815000,
+      "channelId": "pva-studio",
+      "from": { "id": "user-42", "role": 1 },
+      "text": "How many carry-over holiday days do I get?"
+    },
+    {
+      "type": "typing",
+      "id": "typing-1",
+      "timestampMs": 1751020815200,
+      "from": { "id": "copilot-studio", "role": 0 }
+    },
+    {
+      "type": "trace",
+      "id": "trace-thought-1",
+      "timestampMs": 1751020815400,
+      "from": { "id": "copilot-studio", "role": 0 },
+      "valueType": "AgentThought",
+      "value": {
+        "id": "thought-1",
+        "status": "completed",
+        "title": "Locate the leave policy",
+        "description": "The question is about carry-over days, so search the HR knowledge base."
+      }
+    },
+    {
+      "type": "trace",
+      "id": "trace-tool-1",
+      "timestampMs": 1751020816000,
+      "from": { "id": "copilot-studio", "role": 0 },
+      "valueType": "ToolExecution",
+      "value": {
+        "id": "tool-1",
+        "name": "KnowledgeSearch",
+        "displayName": "Search HR knowledge",
+        "status": "completed",
+        "params": { "query": "carry-over holiday days" },
+        "result": "[2 results]\nTitle: Leave policy 2025\nURL: https://contoso.sharepoint.com/hr/leave\nReferenceId: doc-1\n\nTitle: Holiday carry-over FAQ\nURL: https://contoso.sharepoint.com/hr/carryover\nReferenceId: doc-2"
+      }
+    },
+    {
+      "type": "message",
+      "id": "msg-bot-answer",
+      "replyToId": "msg-user-1",
+      "timestampMs": 1751020818000,
+      "channelId": "pva-studio",
+      "from": { "id": "copilot-studio", "role": 0 },
+      "text": "You can carry over up to 5 unused holiday days into the next calendar year.",
+      "attachments": [
+        {
+          "name": "leave-policy-2025.pdf",
+          "contentType": "application/pdf"
+        },
+        {
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "content": { "type": "AdaptiveCard" }
+        }
+      ]
+    },
+    {
+      "type": "trace",
+      "id": "trace-session-info",
+      "timestampMs": 1751020819000,
+      "from": { "id": "copilot-studio", "role": 0 },
+      "valueType": "SessionInfo",
+      "value": { "turnCount": 1, "outcome": "Resolved" }
+    }
+  ]
+}
