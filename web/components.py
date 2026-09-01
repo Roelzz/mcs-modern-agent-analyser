@@ -43,7 +43,11 @@ def header() -> rx.Component:
         ),
         rx.cond(
             State.has_report,
-            rx.button(rx.icon("rotate-ccw", size=15), "New", on_click=State.clear_all, variant="soft", color_scheme="gray", size="2", class_name="no-print"),
+            rx.hstack(
+                rx.button(rx.icon("plus", size=15), "Add data", on_click=State.back_to_input, variant="soft", color_scheme="grass", size="2", class_name="no-print"),
+                rx.button(rx.icon("rotate-ccw", size=15), "New", on_click=State.clear_all, variant="soft", color_scheme="gray", size="2", class_name="no-print"),
+                spacing="2",
+            ),
             rx.fragment(),
         ),
         rx.color_mode.button(),
@@ -58,15 +62,8 @@ def header() -> rx.Component:
     )
 
 
-def upload_zone() -> rx.Component:
+def _upload_tab() -> rx.Component:
     return rx.vstack(
-        rx.heading("Analyse a modern agent", size="6"),
-        rx.text(
-            "Drop a transcript JSON and/or an agent YAML (BotDefinition). Either one works — "
-            "both together gives the full cross-referenced report.",
-            size="2",
-            color_scheme="gray",
-        ),
         rx.upload(
             rx.vstack(
                 rx.icon("upload", size=30, color="var(--grass-9)"),
@@ -108,6 +105,96 @@ def upload_zone() -> rx.Component:
             rx.button("Reset", on_click=State.clear_all, variant="soft", color_scheme="gray", size="3"),
             width="100%",
             spacing="3",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _paste_tab() -> rx.Component:
+    return rx.vstack(
+        rx.text(
+            "Paste the JSON straight from the Dataverse conversationtranscript row — both the "
+            'flat message array and the { "activities": [ ... ] } envelope are detected automatically.',
+            size="1",
+            color_scheme="gray",
+        ),
+        rx.debounce_input(
+            rx.text_area(
+                value=State.paste_text,
+                on_change=State.set_paste_text,
+                placeholder='{ "activities": [ { "type": "message", "from": { "role": 0 }, "text": "..." } ] }',
+                rows="14",
+                spell_check=False,
+                font_family="var(--code-font-family, monospace)",
+                font_size="12px",
+                width="100%",
+                resize="vertical",
+            ),
+            debounce_timeout=300,
+        ),
+        rx.cond(
+            State.paste_preview != "",
+            rx.hstack(
+                rx.icon(
+                    rx.cond(State.paste_is_valid, "circle-check", "circle-alert"),
+                    size=14,
+                    color=rx.cond(State.paste_is_valid, "var(--grass-9)", "var(--red-9)"),
+                ),
+                rx.text(
+                    State.paste_preview,
+                    size="1",
+                    color_scheme=rx.cond(State.paste_is_valid, "grass", "red"),
+                ),
+                rx.spacer(),
+                rx.text(State.paste_text.length().to_string() + " chars", size="1", color_scheme="gray"),
+                width="100%",
+                align="center",
+                spacing="2",
+            ),
+        ),
+        rx.hstack(
+            rx.button(
+                "Analyse",
+                on_click=[State.analyse_pasted, State.refresh_counter],
+                disabled=~State.paste_is_valid,
+                color_scheme="grass",
+                size="3",
+            ),
+            rx.spacer(),
+            rx.button("Clear", on_click=State.clear_paste, variant="soft", color_scheme="gray", size="3"),
+            width="100%",
+            spacing="3",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def upload_zone() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Analyse a modern agent", size="6"),
+        rx.text(
+            "Drop a transcript JSON and/or an agent YAML (BotDefinition), or paste the transcript "
+            "JSON straight in. Either one works — both together gives the full cross-referenced report.",
+            size="2",
+            color_scheme="gray",
+        ),
+        rx.tabs.root(
+            rx.tabs.list(
+                rx.tabs.trigger(
+                    rx.hstack(rx.icon("upload", size=15), rx.text("Upload files"), spacing="2", align="center"),
+                    value="upload",
+                ),
+                rx.tabs.trigger(
+                    rx.hstack(rx.icon("clipboard-paste", size=15), rx.text("Paste JSON"), spacing="2", align="center"),
+                    value="paste",
+                ),
+            ),
+            rx.tabs.content(_upload_tab(), value="upload", padding_top="18px"),
+            rx.tabs.content(_paste_tab(), value="paste", padding_top="18px"),
+            default_value="upload",
+            width="100%",
         ),
         rx.divider(),
         rx.text("Or load a bundled sample:", size="2", color_scheme="gray"),

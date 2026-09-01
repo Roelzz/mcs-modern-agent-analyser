@@ -13,7 +13,7 @@ from agent_parser import parse_agent_yaml_text
 from analysis import analyze
 from models import AgentProfile, Conversation
 from renderer import build_standalone_html, render_markdown
-from transcript_parser import parse_transcript_text
+from transcript_parser import TRANSCRIPT_ENVELOPE_KEYS, parse_transcript_text
 from web.view_models import (
     AnswerGroundingVM,
     ChatBlockVM,
@@ -127,6 +127,9 @@ class State(rx.State):
     agent_text: str = ""
     transcript_name: str = ""
     agent_name: str = ""
+
+    # JSON pasted straight from the Dataverse conversationtranscript row
+    paste_text: str = ""
 
     # Status
     error: str = ""
@@ -574,9 +577,91 @@ class State(rx.State):
             return "agent"
         try:
             obj = json.loads(text)
-            return "transcript" if isinstance(obj, list) else ""
         except (ValueError, TypeError):
             return "agent" if (":" in text and "{" not in text[:80]) else ""
+        if isinstance(obj, list):
+            return "transcript"
+        # Dataverse conversationtranscript exports arrive as an envelope object.
+        if isinstance(obj, dict) and any(k in obj for k in TRANSCRIPT_ENVELOPE_KEYS):
+            return "transcript"
+        return ""
+
+    # ------------------------------------------------------------------
+    # Pasted JSON
+    # ------------------------------------------------------------------
+    @rx.var
+    def paste_preview(self) -> str:
+        """Live validity hint under the paste box."""
+        text = self.paste_text.strip()
+        if not text:
+            return ""
+        try:
+            obj = json.loads(text)
+        except ValueError as exc:
+            return f"Not valid JSON — {exc.msg} (line {exc.lineno})"
+
+        if isinstance(obj, list):
+            return f"Valid JSON · array of {len(obj)} item(s)"
+        if isinstance(obj, dict):
+            for key in TRANSCRIPT_ENVELOPE_KEYS:
+                value = obj.get(key)
+                if isinstance(value, list):
+                    return f"Valid JSON · {key} envelope with {len(value)} item(s)"
+            return "Valid JSON, but no transcript array found (expected activities/messages/records)"
+        return "Valid JSON, but not a transcript"
+
+    @rx.var
+    def paste_is_valid(self) -> bool:
+        text = self.paste_text.strip()
+        if not text:
+            return False
+        try:
+            obj = json.loads(text)
+        except ValueError:
+            return False
+        if isinstance(obj, list):
+            return True
+        return isinstance(obj, dict) and any(
+            isinstance(obj.get(k), list) for k in TRANSCRIPT_ENVELOPE_KEYS
+        )
+
+    def analyse_pasted(self):
+        """Load a transcript pasted straight from the Dataverse row."""
+        self.error = ""
+        text = self.paste_text.strip()
+        if not text:
+            self.error = "Paste a transcript JSON first."
+            return
+
+        # Route on content only — a name ending in .json would short-circuit the
+        # envelope sniffing below and accept any JSON object.
+        kind = self._route("pasted", text)
+        if kind != "transcript":
+            self.error = "That does not look like a transcript. Expected a JSON array of messages or an activities envelope."
+            return
+
+        self.transcript_text, self.transcript_name = text, "pasted transcript"
+        logger.info(f"Pasted transcript ({len(text)} chars) -> transcript")
+        self._set_status()
+        # Same inline pattern as handle_upload: analyse now, don't chain an event.
+        self.run_analysis()
+
+    def clear_paste(self):
+        self.paste_text = ""
+        self.error = ""
+
+    def back_to_input(self):
+        """Reopen the upload/paste panel without discarding what is loaded.
+
+        Analysis runs as soon as one source lands, which hides the input panel.
+        Without this the second source (agent YAML or transcript) is unreachable.
+        """
+        self.has_report = False
+        self.error = ""
+        self._set_status()
+
+    def set_paste_text(self, value: str):
+        self.paste_text = value
 
     async def handle_upload(self, files: list[rx.UploadFile]):
         self.error = ""
@@ -916,6 +1001,7 @@ class State(rx.State):
     def clear_all(self):
         self.transcript_text = self.agent_text = ""
         self.transcript_name = self.agent_name = ""
+        self.paste_text = ""
         self.full_md = ""
         self.has_report = False
         self.error = self.status = ""
