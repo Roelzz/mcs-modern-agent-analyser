@@ -33,7 +33,7 @@ def test_paste_activities_envelope_produces_report():
     assert s.error == ""
     assert s.has_report is True
     assert s.turns
-    assert s.transcript_name == "pasted transcript"
+    assert s.transcript_name == "pasted-transcript.json"
 
 
 def test_paste_bare_activity_array_produces_report():

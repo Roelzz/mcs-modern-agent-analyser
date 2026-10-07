@@ -4,7 +4,7 @@ import pytest
 
 from agent_parser import parse_agent_yaml
 from analysis import analyze
-from transcript_parser import parse_transcript
+from transcript_parser import parse_transcript, parse_transcript_text
 from web.view_models import classify_tool, map_report
 
 FIX = Path(__file__).parent / "fixtures"
@@ -18,9 +18,13 @@ def knowledge_vm():
 
 
 @pytest.fixture(scope="module")
-def agentic_vm():
-    convo = parse_transcript(FIX / "sample_transcript_agentic.json")
-    return map_report(analyze(None, convo), convo)
+def agentic_convo():
+    return parse_transcript(FIX / "sample_transcript_agentic.json")
+
+
+@pytest.fixture(scope="module")
+def agentic_vm(agentic_convo):
+    return map_report(analyze(None, agentic_convo), agentic_convo)
 
 
 def test_knowledge_vm_basics(knowledge_vm):
@@ -45,6 +49,17 @@ def test_knowledge_vm_retrieval_tool(knowledge_vm):
     assert searches[0].docs[0].reference_id.startswith("turn")
 
 
+def test_knowledge_queries_are_grouped_by_conversation_turn(knowledge_vm):
+    turns = knowledge_vm.knowledge_turns
+    assert len(turns) == 2
+    assert [turn.turn_label for turn in turns] == ["Turn 1", "Turn 2"]
+    assert "background checks" in turns[0].question.lower()
+    assert "whistleblower" in turns[1].question.lower()
+    assert turns[0].call_count == 1
+    assert turns[1].call_count == 1
+    assert turns[0].queries[0].sequence_label == "Result 1"
+
+
 def test_agentic_vm_tool_taxonomy(agentic_vm):
     vm = agentic_vm
     assert not vm.has_agent  # transcript only
@@ -53,6 +68,16 @@ def test_agentic_vm_tool_taxonomy(agentic_vm):
     assert kinds.get("SendMessageToUser") == "action"
     assert kinds.get("SendMessageToSelf") == "action"
     assert kinds.get("ListChats") == "action"
+
+
+def test_tool_calls_are_grouped_by_conversation_turn(agentic_vm):
+    turns = agentic_vm.tool_turns
+    assert turns
+    assert all(turn.tool_calls for turn in turns)
+    assert sum(turn.call_count for turn in turns) == len(agentic_vm.tool_calls_all)
+    assert any(turn.action_count > 0 for turn in turns)
+    assert any("call" in turn.summary_label for turn in turns)
+    assert all(call.turn_index == turn.turn_index for turn in turns for call in turn.tool_calls)
 
 
 def test_agentic_vm_action_fields(agentic_vm):
@@ -80,6 +105,97 @@ def test_turn_breakdown(agentic_vm):
     assert last.actions  # final turn performs actions
 
 
+def test_ranked_snippets_map_to_knowledge_ui():
+    import json
+
+    convo = parse_transcript_text(
+        json.dumps(
+            [
+                {"role": "user", "text": "Find details"},
+                {
+                    "role": "bot",
+                    "text": "Found it.",
+                    "toolCalls": [
+                        {
+                            "id": "snippet-1",
+                            "name": "sharepoint_get_snippets",
+                            "category": "KnowledgeRetrieve",
+                            "status": "completed",
+                            "params": {"query": "details", "referenceId": "turn1doc1"},
+                            "result": json.dumps(
+                                {
+                                    "mode": "snippets",
+                                    "query": "details",
+                                    "referenceId": "turn1doc1",
+                                    "returned": 1,
+                                    "snippets": [
+                                        {
+                                            "rank": 1,
+                                            "pageNumber": 4,
+                                            "text": "The highest-ranked passage.",
+                                        }
+                                    ],
+                                }
+                            ),
+                        }
+                    ],
+                },
+            ]
+        )
+    )
+    vm = map_report(analyze(None, convo), convo)
+
+    snippet = vm.knowledge_queries[0].docs[0].snippets[0]
+    query = vm.knowledge_queries[0]
+    assert query.anchor_id == "knowledge-turn-0-result-1"
+    assert query.sequence_label == "Result 1"
+    assert query.tool_name == "sharepoint_get_snippets"
+    assert query.mode_label == "Ranked Snippet Retrieval"
+    assert query.result_label == "1 ranked snippet"
+    assert snippet.rank == 1
+    assert snippet.page_label == "Page 4"
+    assert snippet.text == "The highest-ranked passage."
+
+
+def test_sharepoint_get_doc_maps_to_document_retrieval():
+    import json
+
+    convo = parse_transcript_text(
+        json.dumps(
+            [
+                {"role": "user", "text": "Open the document"},
+                {
+                    "role": "bot",
+                    "text": "Opened.",
+                    "toolCalls": [
+                        {
+                            "id": "doc-1",
+                            "name": "SharePoint_get_doc",
+                            "status": "completed",
+                            "params": {"referenceId": "turn1doc1"},
+                            "result": json.dumps(
+                                {
+                                    "referenceId": "turn1doc1",
+                                    "title": "Comfort Model.docx",
+                                    "content": "Full document content.",
+                                }
+                            ),
+                        }
+                    ],
+                },
+            ]
+        )
+    )
+    vm = map_report(analyze(None, convo), convo)
+    query = vm.knowledge_queries[0]
+
+    assert query.tool_name == "SharePoint_get_doc"
+    assert query.mode_label == "Document Retrieval"
+    assert query.result_label == "1 document"
+    assert query.query == "turn1doc1"
+    assert query.docs[0].title == "Comfort Model.docx"
+
+
 def test_classify_tool_other():
     from models import ToolCall
 
@@ -94,8 +210,17 @@ def test_classify_tool_other():
 CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
 
 _CATEGORIES = {
-    "authentication", "configuration", "conflict", "not-found", "parameter-schema",
-    "permission", "rate-limit", "server-error", "timeout", "unknown", "validation",
+    "authentication",
+    "configuration",
+    "conflict",
+    "not-found",
+    "parameter-schema",
+    "permission",
+    "rate-limit",
+    "server-error",
+    "timeout",
+    "unknown",
+    "validation",
 }
 
 
@@ -197,6 +322,7 @@ def test_failure_rows_embed_full_detail_vm(fail_vm):
         assert d.error == src.error and len(d.error) > 160
         assert d.raw_result == src.raw_result
 
+
 # --------------------------------------------------------------------------- #
 # Generic per-call "Context" — every call (even payload-less skill loads) gets #
 # derived, honest, causal debugging value; never a bare echo.                 #
@@ -218,8 +344,7 @@ def test_context_carries_sequence_provenance(fail_vm):
     # Every call names its position + turn so you can locate it in the run.
     for tc in fail_vm.tool_calls_all:
         assert any(
-            ("Call " in ln and " in this turn (turn " in ln)
-            or ln.startswith("Only tool call in this turn")
+            ("Call " in ln and " in this turn (turn " in ln) or ln.startswith("Only tool call in this turn")
             for ln in tc.context_lines
         )
 
@@ -247,9 +372,7 @@ def test_document_processing_skill_flags_billing(fail_vm):
 def test_context_has_causal_in_turn_linkage(fail_vm):
     # The real payoff: a skill load is tied to what the agent did right after it
     # in the same turn (here: searches + the failed connector calls).
-    pm = next(
-        tc for tc in _skill_loads(fail_vm) if "project-membership" in (tc.display_name or "")
-    )
+    pm = next(tc for tc in _skill_loads(fail_vm) if "project-membership" in (tc.display_name or ""))
     after = next((ln for ln in pm.context_lines if ln.startswith("Immediately after:")), None)
     assert after is not None
     assert "searched knowledge" in after.lower()

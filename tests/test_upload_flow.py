@@ -13,9 +13,7 @@ from pathlib import Path
 
 from web.state import State
 
-CONNECTOR_FAIL = (
-    Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
-)
+CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
 AGENT_YAML = Path(__file__).parent.parent / "samples" / "sample_agent.yaml"
 
 
@@ -41,10 +39,10 @@ def test_single_upload_click_produces_report():
     data = CONNECTOR_FAIL.read_bytes()
     asyncio.run(s.handle_upload([_FakeUpload("sample_transcript_connector_fail.json", data)]))
 
-    assert s.transcript_text  # upload landed
+    assert s._transcript_text  # upload landed
     assert s.error == ""
     assert s.has_report is True  # analysis ran in the SAME handler
-    assert s.tool_calls_all  # report actually populated
+    assert s._tool_calls_all  # report actually populated
 
 
 def test_single_upload_click_agent_yaml_produces_report():
@@ -65,5 +63,5 @@ def test_unroutable_upload_preserves_error_and_skips_analysis():
     asyncio.run(s.handle_upload([_FakeUpload("notes.txt", blob)]))
 
     assert s.error  # routing error surfaced
-    assert not s.transcript_text and not s.agent_text
+    assert not s._transcript_text and not s.agent_text
     assert s.has_report is False  # guard held: no analysis on empty state

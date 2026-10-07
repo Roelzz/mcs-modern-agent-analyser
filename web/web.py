@@ -9,4 +9,4 @@ from web.state import State
 setup_logging()
 
 app = rx.App()
-app.add_page(index, title="Agent Analyser — Modern", on_load=State.refresh_counter)
+app.add_page(index, title="Agent Analyser — Modern", on_load=State.initialize_page)

@@ -114,3 +114,172 @@ def test_unrecognised_shape_raises():
 
 def test_activities_is_a_known_envelope_key():
     assert "activities" in TRANSCRIPT_ENVELOPE_KEYS
+
+
+def test_tool_call_trace_events_capture_structured_knowledge_search():
+    payload = {
+        "activities": [
+            {"type": "message", "from": {"role": 1}, "text": "Find the comfort model"},
+            {
+                "type": "event",
+                "name": "ThinkingTrace",
+                "id": "think-1",
+                "value": {"thinkingText": "Let me search"},
+            },
+            {
+                "type": "event",
+                "name": "ThinkingTrace",
+                "id": "think-2",
+                "value": {"thinkingText": " the knowledge source."},
+            },
+            {
+                "type": "event",
+                "name": "ThinkingTrace",
+                "id": "think-3",
+                "value": {"thinkingText": "Let me search the knowledge source."},
+            },
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Started",
+                "value": {
+                    "toolCallId": "tool-1",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolDisplayName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolKind": "search",
+                    "toolCallStatus": "Started",
+                    "filledParameters": {"query": "comfort model"},
+                },
+            },
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Completed",
+                "value": {
+                    "toolCallId": "tool-1",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolDisplayName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolKind": "search",
+                    "toolCallStatus": "Completed",
+                    "filledParameters": {"query": "comfort model"},
+                    "result": json.dumps(
+                        {
+                            "mode": "semantic",
+                            "query": "comfort model",
+                            "count": 1,
+                            "results": [
+                                {
+                                    "referenceId": "turn1doc1",
+                                    "title": "Comfort Model.docx",
+                                    "url": "https://contoso.sharepoint.com/Comfort%20Model.docx",
+                                    "summary": "A multibody comfort simulation model.",
+                                }
+                            ],
+                        }
+                    ),
+                },
+            },
+            {"type": "message", "from": {"role": 0}, "text": "I found the model [1]."},
+        ]
+    }
+
+    convo = parse_transcript_text(json.dumps(payload))
+
+    assert len(convo.tool_calls) == 1
+    tool = convo.tool_calls[0]
+    assert tool.name == "sharepoint_semantic_search"
+    assert tool.status == "completed"
+    assert tool.category == "KnowledgeSearch"
+    assert tool.result_mode == "semantic"
+    assert tool.is_knowledge_search
+    assert tool.query == "comfort model"
+    assert tool.result_count == 1
+    assert tool.retrieved_docs[0].reference_id == "turn1doc1"
+    assert tool.retrieved_docs[0].title == "Comfort Model.docx"
+    assert [thought.text for thought in convo.thoughts] == ["Let me search the knowledge source."]
+
+
+def test_tool_call_completed_event_preserves_started_parameters():
+    payload = {
+        "activities": [
+            {"type": "message", "from": {"role": 1}, "text": "Find the policy"},
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Started",
+                "value": {
+                    "toolCallId": "tool-params",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolCallStatus": "Started",
+                    "filledParameters": {"query": "leave policy"},
+                },
+            },
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Completed",
+                "value": {
+                    "toolCallId": "tool-params",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolCallStatus": "Completed",
+                    "result": json.dumps({"mode": "semantic", "count": 0, "results": []}),
+                },
+            },
+            {"type": "message", "from": {"role": 0}, "text": "Nothing found."},
+        ]
+    }
+
+    tool = parse_transcript_text(json.dumps(payload)).tool_calls[0]
+    assert tool.query == "leave policy"
+
+
+def test_tool_call_lifecycle_merges_across_intermediate_bot_message():
+    payload = {
+        "activities": [
+            {"type": "message", "from": {"role": 1}, "text": "Find the policy"},
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Started",
+                "value": {
+                    "toolCallId": "tool-straddle",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolCallStatus": "Started",
+                    "filledParameters": {"query": "leave policy"},
+                },
+            },
+            {"type": "message", "from": {"role": 0}, "text": "Searching now…"},
+            {
+                "type": "event",
+                "name": "ToolCallTrace:Completed",
+                "value": {
+                    "toolCallId": "tool-straddle",
+                    "toolName": "sharepoint_semantic_search",
+                    "toolCategory": "KnowledgeSearch",
+                    "toolCallStatus": "Completed",
+                    "result": json.dumps({"mode": "semantic", "count": 0, "results": []}),
+                },
+            },
+            {"type": "message", "from": {"role": 0}, "text": "Nothing found."},
+        ]
+    }
+
+    convo = parse_transcript_text(json.dumps(payload))
+    assert len(convo.tool_calls) == 1
+    assert convo.tool_calls[0].status == "completed"
+    assert convo.tool_calls[0].query == "leave policy"
+
+
+def test_cumulative_thinking_trace_keeps_only_final_text():
+    payload = {
+        "activities": [
+            {"type": "message", "from": {"role": 1}, "text": "Find the policy"},
+            {"type": "event", "name": "ThinkingTrace", "value": {"thinkingText": "Let me"}},
+            {"type": "event", "name": "ThinkingTrace", "value": {"thinkingText": "Let me search"}},
+            {"type": "event", "name": "ThinkingTrace", "value": {"thinkingText": "Let me search the policy."}},
+            {"type": "message", "from": {"role": 0}, "text": "Done."},
+        ]
+    }
+
+    convo = parse_transcript_text(json.dumps(payload))
+    assert [thought.text for thought in convo.thoughts] == ["Let me search the policy."]
