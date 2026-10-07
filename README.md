@@ -111,6 +111,14 @@ Knowledge / Tools lanes.
 
 ![Conversation tab — user/agent chat bubbles with citations and Markdown](docs/screenshots/chat.png)
 
+### Dataverse — load transcripts without manual export
+
+Paste Copilot Studio Session details, sign in with the Microsoft device-code flow,
+and fetch conversation metadata directly from Dataverse. Transcript bodies load only
+when selected for analysis.
+
+![Dataverse connection — session-details auto-fill and device-code authentication](docs/screenshots/dataverse-connection.png)
+
 ### Components — the agent, hierarchically
 
 The question that started this feature: *"an MCP server is added to the agent but it
@@ -122,10 +130,12 @@ explains itself with a Microsoft Learn reference.
 
 ### Knowledge — search, retrieval depth & grounding pipeline
 
-See which searches were productive, how many retrieved docs were actually cited
-(over-retrieval), the SharePoint folder taxonomy, and a per-document grounding chain
-that spells out the document-level vs passage-level caveat.
+For long conversations, filter knowledge-active turns and inspect one user question at
+a time. Each turn preserves the exact search, document retrieval, ranked snippets, and
+source links; conversation-level strategy, retrieval-depth, and grounding analysis
+remain below the explorer.
 
+![Knowledge tab — turn-based search, document, and ranked-snippet explorer](docs/screenshots/knowledge-conversation-explorer.png)
 ![Knowledge tab — search strategy and retrieval depth](docs/screenshots/knowledge.png)
 ![Knowledge tab — per-document grounding pipeline with caveats](docs/screenshots/grounding.png)
 
@@ -139,9 +149,11 @@ The reasoning timeline plus a breakdown of what the code interpreter was *for*:
 
 ### Tools & Actions — usage, hidden failures & generated outputs
 
-Per-tool call/complete/fail counts (including failures hidden behind a `completed`
-status), tool-call efficiency, and the files the agent generated.
+Filter tool-active turns by question, tool name, query, or status, then inspect full
+parameters, responses, failures, and diagnosis in execution order. Aggregate usage,
+efficiency, recovery, and generated outputs remain below the explorer.
 
+![Tools tab — turn-based search, action, and skill explorer](docs/screenshots/tools-conversation-explorer.png)
 ![Tools tab — tool usage table and generated outputs](docs/screenshots/tools.png)
 
 ### Timeline — ordered events per turn
