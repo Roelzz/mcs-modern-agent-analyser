@@ -18,9 +18,7 @@ from transcript_parser import parse_transcript_text
 from web.state import State
 from web.view_models import map_report
 
-CONNECTOR_FAIL = (
-    Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
-)
+CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
 _SECTIONS = ("what", "params", "resp", "err", "diag")
 
 
@@ -30,7 +28,7 @@ def seeded_state():
     s = State(_reflex_internal_init=True)
     txt = CONNECTOR_FAIL.read_text(encoding="utf-8")
     convo = parse_transcript_text(txt)
-    vm = map_report(analyze(AgentProfile(), convo), convo, raw_transcript=txt)
+    vm = map_report(analyze(AgentProfile(), convo), convo)
     s._apply_vm(vm)
     return s
 
@@ -40,20 +38,16 @@ def _payloadless(tc):
 
 
 def _fail_ids(s):
-    return [tc.call_id for tc in s.tool_calls_all if tc.failed]
+    return [tc.call_id for tc in s._tool_calls_all if tc.failed]
 
 
 def _success_ids(s):
-    return [tc.call_id for tc in s.tool_calls_all if not tc.failed and tc.call_id]
+    return [tc.call_id for tc in s._tool_calls_all if not tc.failed and tc.call_id]
 
 
 def _plain_success_ids(s):
     # Successful AND carrying payload — these are the ones that stay collapsed.
-    return [
-        tc.call_id
-        for tc in s.tool_calls_all
-        if not tc.failed and tc.call_id and not _payloadless(tc)
-    ]
+    return [tc.call_id for tc in s._tool_calls_all if not tc.failed and tc.call_id and not _payloadless(tc)]
 
 
 def test_failed_calls_autoexpand_all_sections(seeded_state):
@@ -81,11 +75,7 @@ def test_payloadless_calls_autoopen_what_and_context(seeded_state):
     # params/resp/err — it must auto-open What happened + the derived Context
     # so it isn't a dead, empty card on load.
     s = seeded_state
-    payloadless = [
-        tc.call_id
-        for tc in s.tool_calls_all
-        if not tc.failed and tc.call_id and _payloadless(tc)
-    ]
+    payloadless = [tc.call_id for tc in s._tool_calls_all if not tc.failed and tc.call_id and _payloadless(tc)]
     assert payloadless  # the two skill loads in the sample
     for cid in payloadless:
         assert cid in s.tool_open
@@ -105,7 +95,7 @@ def test_failure_rows_seed_fail_prefixed_keys(seeded_state):
 def test_expand_all_opens_every_flat_call_and_section(seeded_state):
     s = seeded_state
     s.expand_all_tools()
-    for tc in s.tool_calls_all:
+    for tc in s._tool_calls_all:
         assert tc.call_id in s.tool_open
         for sec in (*_SECTIONS, "ctx"):
             assert f"{tc.call_id}::{sec}" in s.tool_sections_open
@@ -115,7 +105,7 @@ def test_collapse_all_clears_flat_but_keeps_fail_rows(seeded_state):
     s = seeded_state
     s.expand_all_tools()
     s.collapse_all_tools()
-    flat_ids = {tc.call_id for tc in s.tool_calls_all}
+    flat_ids = {tc.call_id for tc in s._tool_calls_all}
     # No flat call id (or its sections) remains open.
     assert not any(c in flat_ids for c in s.tool_open)
     assert not any(k.split("::")[0] in flat_ids for k in s.tool_sections_open)

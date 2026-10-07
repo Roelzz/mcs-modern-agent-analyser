@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import reflex as rx
@@ -11,9 +12,16 @@ from loguru import logger
 
 from agent_parser import parse_agent_yaml_text
 from analysis import analyze
+from dataverse_client import (
+    DEFAULT_CLIENT_ID,
+    DataverseClient,
+    acquire_device_flow_token,
+    initiate_device_flow,
+    validate_auth_config,
+)
 from models import AgentProfile, Conversation
 from renderer import build_standalone_html, render_markdown
-from transcript_parser import TRANSCRIPT_ENVELOPE_KEYS, parse_transcript_text
+from transcript_parser import TRANSCRIPT_ENVELOPE_KEYS, activity_role, parse_transcript_text
 from web.view_models import (
     AnswerGroundingVM,
     ChatBlockVM,
@@ -32,7 +40,7 @@ from web.view_models import (
     FolderVM,
     GeneratedArtifactVM,
     GroundingDocVM,
-    KnowledgeQueryVM,
+    KnowledgeTurnVM,
     KSourceVM,
     QuoteCheckVM,
     RecallTurnVM,
@@ -47,6 +55,8 @@ from web.view_models import (
     ToolCallVM,
     ToolFailureVM,
     ToolRowVM,
+    ToolTurnVM,
+    TurnNavVM,
     TurnVM,
     map_report,
 )
@@ -65,6 +75,10 @@ TAB_DEFS: list[tuple[str, str]] = [
 ]
 
 _FILTERS = ("all", "critical", "warning", "info")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 # --- Community usage counter (shared komarev badge, same as the classic analyser) ---
@@ -121,15 +135,141 @@ def _cat_title_for(count: int) -> str:
     return "Curious Kitten"
 
 
+def _transcript_activities(content: object) -> list[dict]:
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except ValueError:
+            return []
+    if isinstance(content, list):
+        return [item for item in content if isinstance(item, dict)]
+    if isinstance(content, dict):
+        activities = content.get("activities")
+        if isinstance(activities, list):
+            return [item for item in activities if isinstance(item, dict)]
+    return []
+
+
+def _summarise_dataverse_record(record: dict) -> tuple[dict, str]:
+    transcript_id = str(record.get("conversationtranscriptid") or "")
+    created_on = str(record.get("createdon") or "")
+    content = record.get("content") or ""
+    activities = _transcript_activities(content)
+    preview = ""
+    for activity in activities:
+        activity_type = str(activity.get("type") or "").lower()
+        if activity_type and activity_type != "message":
+            continue
+        if activity_role(activity) != "user":
+            continue
+        text = str(activity.get("text") or "").strip()
+        if text:
+            preview = text[:120] + ("..." if len(text) > 120 else "")
+            break
+    summary = {
+        "id": transcript_id,
+        "short_id": f"{transcript_id[:8]}..." if len(transcript_id) > 8 else transcript_id,
+        "created_on": created_on[:10] if len(created_on) >= 10 else created_on,
+        "preview": preview or "(no user message found)",
+        "activity_count": len(activities),
+        "activity_label": f"{len(activities)} activities",
+    }
+    content_text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    return summary, content_text
+
+
+def _summarise_dataverse_metadata(record: dict) -> dict:
+    transcript_id = str(record.get("conversationtranscriptid") or "")
+    created_on = str(record.get("createdon") or "")
+    return {
+        "id": transcript_id,
+        "short_id": f"{transcript_id[:8]}..." if len(transcript_id) > 8 else transcript_id,
+        "created_on": created_on[:10] if len(created_on) >= 10 else created_on,
+        "preview": str(record.get("name") or "Select Analyse to load this transcript"),
+        "activity_count": 0,
+        "activity_label": "On demand",
+    }
+
+
+async def _fetch_dataverse_records(
+    org_url: str,
+    access_token: str,
+    bot_identifier: str,
+    since_date: str,
+    top_n: int,
+) -> tuple[list[dict], int]:
+    if not bot_identifier.strip():
+        raise ValueError("Enter the Copilot ID from Copilot Studio session details.")
+    try:
+        since = datetime.strptime(since_date, "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise ValueError("Since date must use YYYY-MM-DD.") from exc
+
+    async with DataverseClient(org_url, access_token) as client:
+        records = await client.fetch_transcripts(bot_identifier.strip(), since, top_n)
+
+    summaries = [_summarise_dataverse_metadata(record) for record in records]
+    return [summary for summary in summaries if summary["id"]], 0
+
+
+async def _fetch_dataverse_transcript(
+    org_url: str,
+    access_token: str,
+    conversation_id: str,
+) -> tuple[dict, str]:
+    async with DataverseClient(org_url, access_token) as client:
+        record = await client.fetch_transcript_by_id(conversation_id)
+    summary, content = _summarise_dataverse_record(record)
+    if not content:
+        raise RuntimeError("Transcript found, but its content is empty.")
+    return summary, content
+
+
+def _dataverse_empty_message(empty_count: int, since_date: str) -> str:
+    if empty_count:
+        return f"Dataverse returned {empty_count} transcript record(s), but none contained transcript content."
+    return (
+        f"No transcripts found since {since_date}. "
+        "Transcripts can take about 30 minutes to appear after a conversation ends."
+    )
+
+
 class State(rx.State):
     # Raw uploaded payloads
-    transcript_text: str = ""
+    _transcript_text: str = ""
     agent_text: str = ""
     transcript_name: str = ""
     agent_name: str = ""
 
     # JSON pasted straight from the Dataverse conversationtranscript row
     paste_text: str = ""
+
+    # Dataverse transcript import
+    dv_org_url: str = rx.LocalStorage("", name="agent-analyser-dv-org-url")
+    dv_tenant_id: str = rx.LocalStorage("", name="agent-analyser-dv-tenant-id")
+    dv_client_id: str = rx.LocalStorage(
+        DEFAULT_CLIENT_ID,
+        name="agent-analyser-dv-client-id",
+    )
+    dv_bot_identifier: str = rx.LocalStorage("", name="agent-analyser-dv-bot-id")
+    dv_since_date: str = ""
+    dv_top_n: int = 50
+    dv_session_details_paste: str = ""
+    dv_autofill_error: str = ""
+    dv_device_code: str = ""
+    dv_device_code_url: str = ""
+    dv_is_authenticating: bool = False
+    dv_auth_error: str = ""
+    dv_is_connected: bool = False
+    dv_is_fetching: bool = False
+    dv_fetch_error: str = ""
+    dv_transcripts: list[dict] = []
+    dv_conversation_id: str = ""
+    dv_single_fetching: bool = False
+    dv_single_fetch_error: str = ""
+    _dv_token: str = ""
+    _dv_auth_attempt: int = 0
+    _dv_analysis_attempt: int = 0
 
     # Status
     error: str = ""
@@ -181,13 +321,18 @@ class State(rx.State):
     tool_rows: list[ToolRowVM] = []
     # flat, ordered list of EVERY tool call (success + fail) — drives the generic
     # "All tool calls" drill-down in the Tools & actions tab.
-    tool_calls_all: list[ToolCallVM] = []
+    _tool_calls_all: list[ToolCallVM] = []
+    _tool_turns: list[ToolTurnVM] = []
+    active_tool_turn: str = ""
+    tool_turn_query: str = ""
     skill_loads: list[str] = []
     retry_signals: list[str] = []
     tool_failures: list[str] = []
 
     # Knowledge
-    knowledge_queries: list[KnowledgeQueryVM] = []
+    _knowledge_turns: list[KnowledgeTurnVM] = []
+    active_knowledge_turn: str = ""
+    knowledge_turn_query: str = ""
     uncited_docs: list[DocVM] = []
     sources_seen: list[str] = []
     zero_result_queries: list[str] = []
@@ -349,13 +494,11 @@ class State(rx.State):
     chat: list[ChatBlockVM] = []
     turns: list[TurnVM] = []
     mermaid: str = ""
-    raw_transcript: str = ""
 
     # --- Interactive UI state ---
     finding_filter: str = "all"
     transcript_query: str = ""
     active_citation: str = ""
-    raw_open: bool = False
     show_thoughts: bool = True
     # Tool-call transparency drop-downs (two-level disclosure).
     # tool_open holds expanded call_ids (Level 1); tool_sections_open holds
@@ -371,7 +514,7 @@ class State(rx.State):
     # ------------------------------------------------------------------
     @rx.var
     def has_transcript(self) -> bool:
-        return bool(self.transcript_text)
+        return bool(self._transcript_text)
 
     @rx.var
     def has_agent(self) -> bool:
@@ -379,7 +522,15 @@ class State(rx.State):
 
     @rx.var
     def can_analyse(self) -> bool:
-        return bool(self.transcript_text or self.agent_text)
+        return bool(self._transcript_text or self.agent_text)
+
+    @rx.var
+    def dv_show_device_code(self) -> bool:
+        return bool(self.dv_device_code) and self.dv_is_authenticating
+
+    @rx.var
+    def dv_has_transcripts(self) -> bool:
+        return bool(self.dv_transcripts)
 
     @rx.var
     def findings_total(self) -> int:
@@ -401,6 +552,142 @@ class State(rx.State):
     @rx.var
     def chat_hits(self) -> int:
         return len(self.filtered_chat)
+
+    def _filtered_knowledge_turn_items(self) -> list[KnowledgeTurnVM]:
+        q = self.knowledge_turn_query.strip().lower()
+        if not q:
+            return self._knowledge_turns
+        return [
+            turn
+            for turn in self._knowledge_turns
+            if q in turn.question.lower()
+            or q in turn.turn_label.lower()
+            or any(q in query.query.lower() or q in query.tool_name.lower() for query in turn.queries)
+        ]
+
+    @rx.var
+    def filtered_knowledge_turns(self) -> list[TurnNavVM]:
+        return [
+            TurnNavVM(
+                id=turn.id,
+                turn_label=turn.turn_label,
+                question_excerpt=turn.question_excerpt,
+                summary_label=turn.summary_label,
+            )
+            for turn in self._filtered_knowledge_turn_items()
+        ]
+
+    @rx.var
+    def has_knowledge_turns(self) -> bool:
+        return bool(self._knowledge_turns)
+
+    @rx.var
+    def selected_knowledge_turn(self) -> KnowledgeTurnVM:
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return KnowledgeTurnVM()
+        return next(
+            (turn for turn in turns if turn.id == self.active_knowledge_turn),
+            turns[0],
+        )
+
+    @rx.var
+    def knowledge_turn_position(self) -> str:
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return ""
+        index = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_knowledge_turn),
+            0,
+        )
+        return f"{index + 1} of {len(turns)}"
+
+    @rx.var
+    def has_previous_knowledge_turn(self) -> bool:
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return False
+        current_id = self.active_knowledge_turn or turns[0].id
+        return current_id != turns[0].id
+
+    @rx.var
+    def has_next_knowledge_turn(self) -> bool:
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return False
+        current_id = self.active_knowledge_turn or turns[0].id
+        return current_id != turns[-1].id
+
+    def _filtered_tool_turn_items(self) -> list[ToolTurnVM]:
+        q = self.tool_turn_query.strip().lower()
+        if not q:
+            return self._tool_turns
+        return [
+            turn
+            for turn in self._tool_turns
+            if q in turn.question.lower()
+            or q in turn.turn_label.lower()
+            or any(
+                q in call.name.lower()
+                or q in call.display_name.lower()
+                or q in call.query.lower()
+                or q in call.status.lower()
+                for call in turn.tool_calls
+            )
+        ]
+
+    @rx.var
+    def filtered_tool_turns(self) -> list[TurnNavVM]:
+        return [
+            TurnNavVM(
+                id=turn.id,
+                turn_label=turn.turn_label,
+                question_excerpt=turn.question_excerpt,
+                summary_label=turn.summary_label,
+            )
+            for turn in self._filtered_tool_turn_items()
+        ]
+
+    @rx.var
+    def has_tool_turns(self) -> bool:
+        return bool(self._tool_turns)
+
+    @rx.var
+    def selected_tool_turn(self) -> ToolTurnVM:
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return ToolTurnVM()
+        return next(
+            (turn for turn in turns if turn.id == self.active_tool_turn),
+            turns[0],
+        )
+
+    @rx.var
+    def tool_turn_position(self) -> str:
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return ""
+        index = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_tool_turn),
+            0,
+        )
+        return f"{index + 1} of {len(turns)}"
+
+    @rx.var
+    def has_previous_tool_turn(self) -> bool:
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return False
+        current_id = self.active_tool_turn or turns[0].id
+        return current_id != turns[0].id
+
+    @rx.var
+    def has_next_tool_turn(self) -> bool:
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return False
+        current_id = self.active_tool_turn or turns[0].id
+        return current_id != turns[-1].id
 
     @rx.var
     def grounded_total(self) -> int:
@@ -474,11 +761,78 @@ class State(rx.State):
     def clear_transcript_query(self):
         self.transcript_query = ""
 
+    def set_knowledge_turn_query(self, value: str):
+        self.knowledge_turn_query = value
+        matches = self._filtered_knowledge_turn_items()
+        if matches and all(turn.id != self.active_knowledge_turn for turn in matches):
+            self.active_knowledge_turn = matches[0].id
+
+    def clear_knowledge_turn_query(self):
+        self.knowledge_turn_query = ""
+
+    def select_knowledge_turn(self, turn_id: str):
+        if any(turn.id == turn_id for turn in self._knowledge_turns):
+            self.active_knowledge_turn = turn_id
+
+    def previous_knowledge_turn(self):
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return
+        current = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_knowledge_turn),
+            0,
+        )
+        if current > 0:
+            self.active_knowledge_turn = turns[current - 1].id
+
+    def next_knowledge_turn(self):
+        turns = self._filtered_knowledge_turn_items()
+        if not turns:
+            return
+        current = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_knowledge_turn),
+            0,
+        )
+        if current < len(turns) - 1:
+            self.active_knowledge_turn = turns[current + 1].id
+
+    def set_tool_turn_query(self, value: str):
+        self.tool_turn_query = value
+        matches = self._filtered_tool_turn_items()
+        if matches and all(turn.id != self.active_tool_turn for turn in matches):
+            self.active_tool_turn = matches[0].id
+
+    def clear_tool_turn_query(self):
+        self.tool_turn_query = ""
+
+    def select_tool_turn(self, turn_id: str):
+        if any(turn.id == turn_id for turn in self._tool_turns):
+            self.active_tool_turn = turn_id
+
+    def previous_tool_turn(self):
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return
+        current = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_tool_turn),
+            0,
+        )
+        if current > 0:
+            self.active_tool_turn = turns[current - 1].id
+
+    def next_tool_turn(self):
+        turns = self._filtered_tool_turn_items()
+        if not turns:
+            return
+        current = next(
+            (i for i, turn in enumerate(turns) if turn.id == self.active_tool_turn),
+            0,
+        )
+        if current < len(turns) - 1:
+            self.active_tool_turn = turns[current + 1].id
+
     def toggle_citation(self, rid: str):
         self.active_citation = "" if self.active_citation == rid else rid
-
-    def toggle_raw(self):
-        self.raw_open = not self.raw_open
 
     def toggle_tool(self, cid: str):
         """Expand/collapse a tool-call drop-down (Level 1)."""
@@ -500,7 +854,7 @@ class State(rx.State):
         detail sections at once (success + fail). Preserves already-open chat/fail rows."""
         open_calls = list(self.tool_open)
         open_sections = list(self.tool_sections_open)
-        for _tc in self.tool_calls_all:
+        for _tc in self._tool_calls_all:
             _cid = _tc.call_id
             if _cid not in open_calls:
                 open_calls.append(_cid)
@@ -514,11 +868,9 @@ class State(rx.State):
     def collapse_all_tools(self):
         """Collapse every tool call in the flat 'All tool calls' list and its sections.
         Leaves unrelated keys (chat cards, fail:: rows) untouched."""
-        flat_ids = [_tc.call_id for _tc in self.tool_calls_all]
+        flat_ids = [_tc.call_id for _tc in self._tool_calls_all]
         self.tool_open = [c for c in self.tool_open if c not in flat_ids]
-        self.tool_sections_open = [
-            k for k in self.tool_sections_open if k.split("::")[0] not in flat_ids
-        ]
+        self.tool_sections_open = [k for k in self.tool_sections_open if k.split("::")[0] not in flat_ids]
 
     def toggle_thoughts(self):
         self.show_thoughts = not self.show_thoughts
@@ -546,6 +898,42 @@ class State(rx.State):
     def select_component(self, cid: str):
         self.active_component = cid
 
+    def set_dv_org_url(self, value: str):
+        self.dv_org_url = value
+
+    def set_dv_tenant_id(self, value: str):
+        self.dv_tenant_id = value
+
+    def set_dv_client_id(self, value: str):
+        self.dv_client_id = value
+
+    def set_dv_bot_identifier(self, value: str):
+        self.dv_bot_identifier = value
+
+    def set_dv_since_date(self, value: str):
+        self.dv_since_date = value
+
+    def set_dv_top_n(self, value: str):
+        try:
+            self.dv_top_n = max(1, min(int(value), 250))
+        except (TypeError, ValueError):
+            return
+
+    def set_dv_session_details_paste(self, value: str):
+        self.dv_session_details_paste = value
+
+    def set_dv_conversation_id(self, value: str):
+        self.dv_conversation_id = value
+
+    def dv_forget_connection_info(self):
+        self.dv_org_url = ""
+        self.dv_tenant_id = ""
+        self.dv_client_id = DEFAULT_CLIENT_ID
+        self.dv_bot_identifier = ""
+        self.dv_session_details_paste = ""
+        self.dv_autofill_error = ""
+        self.dv_auth_error = ""
+
     # ------------------------------------------------------------------
     # Usage counter (shared komarev counter)
     # ------------------------------------------------------------------
@@ -556,6 +944,11 @@ class State(rx.State):
         if self.analyses_count > prev and prev > 0:
             self.counter_animating = True
             self.milestone_reached = any(prev < t <= self.analyses_count for t in _MILESTONE_THRESHOLDS)
+
+    async def initialize_page(self):
+        if not self.dv_since_date:
+            self.dv_since_date = (datetime.now(UTC) - timedelta(days=30)).strftime("%Y-%m-%d")
+        await self.refresh_counter()
 
     def reset_counter_animation(self):
         self.counter_animating = False
@@ -621,9 +1014,7 @@ class State(rx.State):
             return False
         if isinstance(obj, list):
             return True
-        return isinstance(obj, dict) and any(
-            isinstance(obj.get(k), list) for k in TRANSCRIPT_ENVELOPE_KEYS
-        )
+        return isinstance(obj, dict) and any(isinstance(obj.get(k), list) for k in TRANSCRIPT_ENVELOPE_KEYS)
 
     def analyse_pasted(self):
         """Load a transcript pasted straight from the Dataverse row."""
@@ -637,10 +1028,12 @@ class State(rx.State):
         # envelope sniffing below and accept any JSON object.
         kind = self._route("pasted", text)
         if kind != "transcript":
-            self.error = "That does not look like a transcript. Expected a JSON array of messages or an activities envelope."
+            self.error = (
+                "That does not look like a transcript. Expected a JSON array of messages or an activities envelope."
+            )
             return
 
-        self.transcript_text, self.transcript_name = text, "pasted transcript"
+        self._transcript_text, self.transcript_name = text, "pasted-transcript.json"
         logger.info(f"Pasted transcript ({len(text)} chars) -> transcript")
         self._set_status()
         # Same inline pattern as handle_upload: analyse now, don't chain an event.
@@ -663,6 +1056,303 @@ class State(rx.State):
     def set_paste_text(self, value: str):
         self.paste_text = value
 
+    # ------------------------------------------------------------------
+    # Dataverse import
+    # ------------------------------------------------------------------
+    def dv_autofill_from_session_details(self):
+        text = self.dv_session_details_paste.strip()
+        if not text:
+            self.dv_autofill_error = "Paste the Copilot Studio session details first."
+            return
+
+        filled: list[str] = []
+        missing: list[str] = []
+        patterns = (
+            ("Tenant ID", r"Tenant\s+ID\s*:\s*([0-9a-f-]{36})", "dv_tenant_id"),
+            ("Instance URL", r"Instance\s+url\s*:\s*(https?://\S+)", "dv_org_url"),
+            ("Copilot ID", r"Copilot\s+Id\s*:\s*([0-9a-f-]{36})", "dv_bot_identifier"),
+        )
+        for label, pattern, field in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                setattr(self, field, match.group(1).rstrip("/"))
+                filled.append(label)
+            else:
+                missing.append(label)
+
+        if not filled:
+            self.dv_autofill_error = (
+                "No session details found. Expected Tenant ID, Instance url, and Copilot Id labels."
+            )
+            return
+        self.dv_session_details_paste = ""
+        self.dv_autofill_error = f"Filled {', '.join(filled)}. Missing: {', '.join(missing)}." if missing else ""
+
+    @rx.event(background=True)
+    async def start_device_flow(self):
+        async with self:
+            self.dv_auth_error = ""
+            self.dv_fetch_error = ""
+            self._dv_auth_attempt += 1
+            auth_attempt = self._dv_auth_attempt
+            org_value = self.dv_org_url
+            tenant_value = self.dv_tenant_id
+            client_value = self.dv_client_id
+        try:
+            tenant_id, client_id, org_url = validate_auth_config(
+                tenant_value,
+                client_value,
+                org_value,
+            )
+        except ValueError as exc:
+            async with self:
+                if auth_attempt == self._dv_auth_attempt:
+                    self.dv_auth_error = str(exc)
+            return
+
+        async with self:
+            if auth_attempt != self._dv_auth_attempt:
+                return
+            self.dv_tenant_id = tenant_id
+            self.dv_client_id = client_id
+            self.dv_org_url = org_url
+            self.dv_is_authenticating = True
+            self.dv_device_code = ""
+            self.dv_device_code_url = ""
+
+        try:
+            flow = await initiate_device_flow(tenant_id, client_id, org_url)
+            async with self:
+                if auth_attempt != self._dv_auth_attempt:
+                    return
+                self.dv_device_code = str(flow["user_code"])
+                self.dv_device_code_url = str(flow.get("verification_uri") or "https://microsoft.com/devicelogin")
+
+            async def auth_cancelled() -> bool:
+                async with self:
+                    return auth_attempt != self._dv_auth_attempt
+
+            access_token = await acquire_device_flow_token(
+                tenant_id,
+                client_id,
+                str(flow["device_code"]),
+                expires_in=min(int(flow.get("expires_in") or 300), 300),
+                interval=int(flow.get("interval") or 5),
+                is_cancelled=auth_cancelled,
+            )
+            if access_token is None:
+                return
+            async with self:
+                if auth_attempt != self._dv_auth_attempt:
+                    return
+                self._dv_token = access_token
+                self.dv_is_connected = True
+                self.dv_is_authenticating = False
+                self.dv_device_code = ""
+                self.dv_device_code_url = ""
+                bot_identifier = self.dv_bot_identifier
+                since_date = self.dv_since_date
+                top_n = self.dv_top_n
+            logger.info("Dataverse device-code authentication succeeded")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Dataverse authentication failed: {exc}")
+            async with self:
+                if auth_attempt == self._dv_auth_attempt:
+                    self.dv_auth_error = str(exc)
+                    self._dv_token = ""
+                    self.dv_is_connected = False
+                    self.dv_is_authenticating = False
+                    self.dv_device_code = ""
+                    self.dv_device_code_url = ""
+            return
+
+        if not bot_identifier.strip():
+            return
+
+        async with self:
+            if auth_attempt != self._dv_auth_attempt:
+                return
+            self.dv_is_fetching = True
+        try:
+            summaries, empty_count = await _fetch_dataverse_records(
+                org_url,
+                access_token,
+                bot_identifier,
+                since_date,
+                top_n,
+            )
+            async with self:
+                if auth_attempt != self._dv_auth_attempt:
+                    return
+                self.dv_transcripts = summaries
+                if not summaries:
+                    self.dv_fetch_error = _dataverse_empty_message(empty_count, since_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Initial Dataverse transcript fetch failed: {exc}")
+            async with self:
+                if auth_attempt == self._dv_auth_attempt:
+                    self.dv_fetch_error = str(exc)
+        finally:
+            async with self:
+                if auth_attempt == self._dv_auth_attempt:
+                    self.dv_is_fetching = False
+
+    @rx.event(background=True)
+    async def dv_fetch_transcripts(self):
+        async with self:
+            if not self.dv_is_connected or not self._dv_token:
+                self.dv_fetch_error = "Connect to Dataverse first."
+                return
+            request_attempt = self._dv_auth_attempt
+            org_url = self.dv_org_url
+            token = self._dv_token
+            bot_identifier = self.dv_bot_identifier
+            since_date = self.dv_since_date
+            top_n = self.dv_top_n
+            self.dv_fetch_error = ""
+            self.dv_is_fetching = True
+        try:
+            summaries, empty_count = await _fetch_dataverse_records(
+                org_url,
+                token,
+                bot_identifier,
+                since_date,
+                top_n,
+            )
+            async with self:
+                if request_attempt != self._dv_auth_attempt or not self.dv_is_connected:
+                    return
+                self.dv_transcripts = summaries
+                if not summaries:
+                    self.dv_fetch_error = _dataverse_empty_message(empty_count, since_date)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Dataverse transcript fetch failed: {exc}")
+            async with self:
+                if request_attempt == self._dv_auth_attempt and self.dv_is_connected:
+                    self.dv_fetch_error = str(exc)
+        finally:
+            async with self:
+                if request_attempt == self._dv_auth_attempt:
+                    self.dv_is_fetching = False
+
+    @rx.event(background=True)
+    async def dv_analyse_transcript(self, transcript_id: str):
+        async with self:
+            if not self.dv_is_connected or not self._dv_token:
+                self.dv_fetch_error = "Connect to Dataverse first."
+                return
+            request_attempt = self._dv_auth_attempt
+            self._dv_analysis_attempt += 1
+            analysis_attempt = self._dv_analysis_attempt
+            org_url = self.dv_org_url
+            token = self._dv_token
+            self.dv_is_fetching = True
+            self.dv_single_fetching = False
+            self.dv_fetch_error = ""
+        try:
+            _summary, content = await _fetch_dataverse_transcript(org_url, token, transcript_id)
+            async with self:
+                if (
+                    request_attempt != self._dv_auth_attempt
+                    or analysis_attempt != self._dv_analysis_attempt
+                    or not self.dv_is_connected
+                ):
+                    return
+                self._transcript_text = content
+                self.transcript_name = f"dataverse-{transcript_id[:8]}.json"
+                self._set_status()
+                self.run_analysis()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Dataverse transcript analysis failed: {exc}")
+            async with self:
+                if (
+                    request_attempt == self._dv_auth_attempt
+                    and analysis_attempt == self._dv_analysis_attempt
+                    and self.dv_is_connected
+                ):
+                    self.dv_fetch_error = str(exc)
+        finally:
+            async with self:
+                if request_attempt == self._dv_auth_attempt and analysis_attempt == self._dv_analysis_attempt:
+                    self.dv_is_fetching = False
+                    self.dv_single_fetching = False
+
+    @rx.event(background=True)
+    async def dv_fetch_and_analyse_by_id(self):
+        async with self:
+            conversation_id = self.dv_conversation_id.strip()
+            if not self.dv_is_connected or not self._dv_token:
+                self.dv_single_fetch_error = "Connect to Dataverse first."
+                return
+            if not _UUID_RE.fullmatch(conversation_id):
+                self.dv_single_fetch_error = "Conversation ID must be a UUID."
+                return
+            self.dv_single_fetch_error = ""
+            self.dv_single_fetching = True
+            self.dv_is_fetching = False
+            request_attempt = self._dv_auth_attempt
+            self._dv_analysis_attempt += 1
+            analysis_attempt = self._dv_analysis_attempt
+            org_url = self.dv_org_url
+            token = self._dv_token
+        try:
+            summary, content = await _fetch_dataverse_transcript(org_url, token, conversation_id)
+            async with self:
+                if (
+                    request_attempt != self._dv_auth_attempt
+                    or analysis_attempt != self._dv_analysis_attempt
+                    or not self.dv_is_connected
+                ):
+                    return
+                self.dv_transcripts = [summary]
+                self._transcript_text = content
+                self.transcript_name = f"dataverse-{conversation_id[:8]}.json"
+                self._set_status()
+                self.run_analysis()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Dataverse conversation lookup failed: {exc}")
+            async with self:
+                if (
+                    request_attempt == self._dv_auth_attempt
+                    and analysis_attempt == self._dv_analysis_attempt
+                    and self.dv_is_connected
+                ):
+                    self.dv_single_fetch_error = str(exc)
+        finally:
+            async with self:
+                if request_attempt == self._dv_auth_attempt and analysis_attempt == self._dv_analysis_attempt:
+                    self.dv_single_fetching = False
+                    self.dv_is_fetching = False
+
+    def dv_disconnect(self):
+        self._dv_auth_attempt += 1
+        self._dv_analysis_attempt += 1
+        self._dv_token = ""
+        self.dv_is_connected = False
+        self.dv_is_authenticating = False
+        self.dv_is_fetching = False
+        self.dv_single_fetching = False
+        self.dv_device_code = ""
+        self.dv_device_code_url = ""
+        self.dv_auth_error = ""
+        self.dv_fetch_error = ""
+        self.dv_transcripts = []
+        self.dv_single_fetch_error = ""
+        if self.transcript_name.startswith("dataverse-"):
+            self._transcript_text = ""
+            self.transcript_name = ""
+            self.full_md = ""
+            self.has_report = False
+            self.status = ""
+
+    def dv_cancel_auth(self):
+        self._dv_auth_attempt += 1
+        self._dv_analysis_attempt += 1
+        self.dv_is_authenticating = False
+        self.dv_device_code = ""
+        self.dv_device_code_url = ""
+        self.dv_auth_error = ""
+
     async def handle_upload(self, files: list[rx.UploadFile]):
         self.error = ""
         for file in files:
@@ -680,7 +1370,7 @@ class State(rx.State):
                 continue
             kind = self._route(name, text)
             if kind == "transcript":
-                self.transcript_text, self.transcript_name = text, name
+                self._transcript_text, self.transcript_name = text, name
             elif kind == "agent":
                 self.agent_text, self.agent_name = text, name
             else:
@@ -691,12 +1381,12 @@ class State(rx.State):
         # Run analysis in the same handler so it can't race the upload POST.
         # (The upload arrives over a separate HTTP channel; a chained
         # run_analysis event would read empty state on the first click.)
-        if not self.error and (self.transcript_text or self.agent_text):
+        if not self.error and (self._transcript_text or self.agent_text):
             self.run_analysis()
 
     def _set_status(self):
         bits = []
-        if self.transcript_text:
+        if self._transcript_text:
             bits.append(f"transcript ({self.transcript_name})")
         if self.agent_text:
             bits.append(f"agent ({self.agent_name})")
@@ -707,7 +1397,7 @@ class State(rx.State):
     # ------------------------------------------------------------------
     def run_analysis(self):
         self.error = ""
-        if not (self.transcript_text or self.agent_text):
+        if not (self._transcript_text or self.agent_text):
             self.error = "Upload a transcript JSON and/or an agent YAML first."
             return
 
@@ -721,8 +1411,8 @@ class State(rx.State):
             logger.error(self.error)
             return
         try:
-            if self.transcript_text:
-                convo = parse_transcript_text(self.transcript_text)
+            if self._transcript_text:
+                convo = parse_transcript_text(self._transcript_text)
         except Exception as exc:  # noqa: BLE001
             self.error = f"Transcript parse failed: {exc}"
             logger.error(self.error)
@@ -730,7 +1420,7 @@ class State(rx.State):
 
         report = analyze(profile, convo)
         self.full_md = render_markdown(report, convo)
-        self._apply_vm(map_report(report, convo, raw_transcript=self.transcript_text))
+        self._apply_vm(map_report(report, convo))
 
         self.active_tab = "overview"
         self.finding_filter = "all"
@@ -766,12 +1456,17 @@ class State(rx.State):
         self.f_critical, self.f_warning, self.f_info = vm.f_critical, vm.f_warning, vm.f_info
 
         self.tool_rows = vm.tool_rows
-        self.tool_calls_all = vm.tool_calls_all
+        self._tool_calls_all = vm.tool_calls_all
+        self._tool_turns = vm.tool_turns
+        self.active_tool_turn = vm.tool_turns[0].id if vm.tool_turns else ""
+        self.tool_turn_query = ""
         self.skill_loads = vm.skill_loads
         self.retry_signals = vm.retry_signals
         self.tool_failures = vm.tool_failures
 
-        self.knowledge_queries = vm.knowledge_queries
+        self._knowledge_turns = vm.knowledge_turns
+        self.active_knowledge_turn = vm.knowledge_turns[0].id if vm.knowledge_turns else ""
+        self.knowledge_turn_query = ""
         self.uncited_docs = vm.uncited_docs
         self.sources_seen = vm.sources_seen
         self.zero_result_queries = vm.zero_result_queries
@@ -905,9 +1600,7 @@ class State(rx.State):
         for _tc in vm.tool_calls_all:
             _cid = _tc.call_id
             _failed = getattr(_tc, "failed", False) or getattr(_tc, "has_error", False)
-            _payloadless = not (
-                _tc.params or _tc.raw_result or _tc.docs or _tc.content_html or _tc.content_text
-            )
+            _payloadless = not (_tc.params or _tc.raw_result or _tc.docs or _tc.content_html or _tc.content_text)
             if _failed:
                 open_calls.append(_cid)
                 for _sec in ("what", "ctx", "params", "resp", "err", "diag"):
@@ -928,7 +1621,6 @@ class State(rx.State):
         self.tool_sections_open = open_sections
         self.turns = vm.turns
         self.mermaid = vm.mermaid
-        self.raw_transcript = vm.raw_transcript
 
     # ------------------------------------------------------------------
     # Samples
@@ -944,32 +1636,32 @@ class State(rx.State):
         try:
             if kind == "agentic":
                 with open("samples/sample_transcript_agentic.json", encoding="utf-8") as fh:
-                    self.transcript_text = fh.read()
+                    self._transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_agentic.json"
             elif kind == "connector":
                 with open("samples/sample_transcript_connector_fail.json", encoding="utf-8") as fh:
-                    self.transcript_text = fh.read()
+                    self._transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_connector_fail.json"
             elif kind == "sandbox":
                 with open("samples/sample_agent_sandbox.yaml", encoding="utf-8") as fh:
                     self.agent_text = fh.read()
                     self.agent_name = "sample_agent_sandbox.yaml"
                 with open("samples/sample_transcript_sandbox.json", encoding="utf-8") as fh:
-                    self.transcript_text = fh.read()
+                    self._transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_sandbox.json"
             elif kind == "deck":
                 with open("samples/sample_agent_sandbox.yaml", encoding="utf-8") as fh:
                     self.agent_text = fh.read()
                     self.agent_name = "sample_agent_sandbox.yaml"
                 with open("samples/sample_transcript_deck.json", encoding="utf-8") as fh:
-                    self.transcript_text = fh.read()
+                    self._transcript_text = fh.read()
                     self.transcript_name = "sample_transcript_deck.json"
             else:
                 with open("samples/sample_agent.yaml", encoding="utf-8") as fh:
                     self.agent_text = fh.read()
                     self.agent_name = "sample_agent.yaml"
                 with open("samples/sample_transcript.json", encoding="utf-8") as fh:
-                    self.transcript_text = fh.read()
+                    self._transcript_text = fh.read()
                     self.transcript_name = "sample_transcript.json"
         except OSError as exc:
             self.error = f"Could not load sample: {exc}"
@@ -995,11 +1687,18 @@ class State(rx.State):
         html_doc = build_standalone_html(self.full_md, title)
         return rx.download(data=html_doc, filename=self._slug() + "_analysis.html")
 
+    def download_raw_transcript(self):
+        if not self._transcript_text:
+            return None
+        filename = self.transcript_name or "conversation-transcript.json"
+        return rx.download(data=self._transcript_text, filename=filename)
+
     def print_report(self):
         return rx.call_script("window.print()")
 
     def clear_all(self):
-        self.transcript_text = self.agent_text = ""
+        self._transcript_text = ""
+        self.agent_text = ""
         self.transcript_name = self.agent_name = ""
         self.paste_text = ""
         self.full_md = ""
@@ -1008,13 +1707,32 @@ class State(rx.State):
         self.active_tab = "overview"
         self.finding_filter = "all"
         self.transcript_query = ""
+        self.knowledge_turn_query = ""
+        self.active_knowledge_turn = ""
+        self.tool_turn_query = ""
+        self.active_tool_turn = ""
         self.active_citation = ""
-        self.raw_open = False
         self.tool_open = []
         self.tool_sections_open = []
         self.component_query = ""
         self.active_component = ""
         self.collapsed_nodes = []
+        self._tool_calls_all = []
+        self._tool_turns = []
+        self._knowledge_turns = []
+        self._dv_auth_attempt += 1
+        self._dv_analysis_attempt += 1
+        self._dv_token = ""
+        self.dv_is_connected = False
+        self.dv_is_authenticating = False
+        self.dv_is_fetching = False
+        self.dv_single_fetching = False
+        self.dv_auth_error = ""
+        self.dv_fetch_error = ""
+        self.dv_single_fetch_error = ""
+        self.dv_device_code = ""
+        self.dv_device_code_url = ""
+        self.dv_transcripts = []
         return rx.clear_selected_files("upload")
 
 

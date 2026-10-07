@@ -111,11 +111,18 @@ class AgentProfile(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RetrievedSnippet(BaseModel):
+    rank: int | None = None
+    page_number: int | None = None
+    text: str = ""
+
+
 class RetrievedDoc(BaseModel):
     title: str | None = None
     url: str | None = None
     reference_id: str | None = None  # e.g. turn1doc1
     snippet: str | None = None  # summary text returned with the doc (often a sandbox notice)
+    snippets: list[RetrievedSnippet] = Field(default_factory=list)
 
 
 class ToolCall(BaseModel):
@@ -123,8 +130,11 @@ class ToolCall(BaseModel):
     name: str | None = None  # KnowledgeSearch, skill, ...
     status: str | None = None  # completed / failed / ...
     display_name: str | None = None  # "Searched knowledge", "Loaded Skill: analyzing-docx"
+    category: str | None = None  # KnowledgeSearch / KnowledgeRetrieve / ...
+    kind: str | None = None  # search / connector / ...
     params: dict = Field(default_factory=dict)
     result: str | None = None  # raw result text
+    result_mode: str | None = None  # semantic / lexical / snippets / ...
     error: str | None = None  # raw error payload (connector/MCP/action failures)
 
     # Parsed from `result` (best-effort, for KnowledgeSearch-style tools)
@@ -139,7 +149,26 @@ class ToolCall(BaseModel):
 
     @property
     def is_knowledge_search(self) -> bool:
-        return (self.name or "").lower() == "knowledgesearch"
+        name = (self.name or "").lower()
+        category = (self.category or "").lower()
+        return (
+            name == "knowledgesearch"
+            or category == "knowledgesearch"
+            or name.startswith("sharepoint_")
+            and "search" in name
+        )
+
+    @property
+    def is_knowledge_retrieval(self) -> bool:
+        name = (self.name or "").lower()
+        category = (self.category or "").lower()
+        return category == "knowledgeretrieve" or (
+            name.startswith("sharepoint_") and any(token in name for token in ("snippet", "get_doc", "get_document"))
+        )
+
+    @property
+    def is_knowledge_activity(self) -> bool:
+        return self.is_knowledge_search or self.is_knowledge_retrieval
 
     @property
     def failed(self) -> bool:
@@ -278,6 +307,12 @@ class KnowledgeQuery(BaseModel):
     result_count: int = 0
     docs: list[RetrievedDoc] = Field(default_factory=list)
     zero_result: bool = False
+    tool_name: str = ""
+    tool_category: str = ""
+    result_mode: str = ""
+    is_search: bool = True
+    turn_index: int = 0
+    user_question: str = ""
 
 
 class KnowledgeAnalysis(BaseModel):
@@ -378,7 +413,9 @@ class CitationAudit(BaseModel):
 
 class CreditLineItem(BaseModel):
     label: str
-    kind: str  # generative_answer / agent_action / classic_answer / premium_reasoning / content_processing / tenant_graph
+    kind: (
+        str  # generative_answer / agent_action / classic_answer / premium_reasoning / content_processing / tenant_graph
+    )
     credits: float
     detail: str = ""
     turn_index: int | None = None  # for the per-turn credit stack

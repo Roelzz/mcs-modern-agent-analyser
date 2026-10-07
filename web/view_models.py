@@ -65,7 +65,11 @@ _COMPONENT_CATEGORY_ICON = {
 _GROUP_META = {
     "agent": ("Agent", "settings", "Core agent configuration and system instructions."),
     "knowledge": ("Knowledge sources", "book-open", "Grounding sources the agent can search."),
-    "tools": ("Tools", "wrench", "Tools the agent can use, grouped by kind (MCP, connector, connected agent, flow, skill, action)."),
+    "tools": (
+        "Tools",
+        "wrench",
+        "Tools the agent can use, grouped by kind (MCP, connector, connected agent, flow, skill, action).",
+    ),
     "env": ("Environment variables", "braces", "Configuration values resolved per environment."),
 }
 
@@ -141,12 +145,20 @@ class KV:
 
 
 @dataclass
+class SnippetVM:
+    rank: int = 0
+    page_label: str = ""
+    text: str = ""
+
+
+@dataclass
 class DocVM:
     title: str = ""
     url: str = ""
     reference_id: str = ""
     cited: bool = False
     unused: bool = False
+    snippets: list[SnippetVM] = field(default_factory=list)
 
 
 @dataclass
@@ -161,6 +173,7 @@ class ToolCallVM:
     name: str = ""
     display_name: str = ""
     call_id: str = ""
+    turn_index: int = 0
     status: str = ""
     failed: bool = False
     icon: str = "wrench"
@@ -235,11 +248,55 @@ class ToolRowVM:
 
 
 @dataclass
+class ToolTurnVM:
+    id: str = ""
+    turn_index: int = 0
+    turn_label: str = ""
+    question: str = ""
+    question_excerpt: str = ""
+    call_count: int = 0
+    failed_count: int = 0
+    retrieval_count: int = 0
+    action_count: int = 0
+    skill_count: int = 0
+    summary_label: str = ""
+    tool_calls: list[ToolCallVM] = field(default_factory=list)
+
+
+@dataclass
 class KnowledgeQueryVM:
+    anchor_id: str = ""
+    sequence_label: str = ""
+    tool_name: str = ""
+    mode_label: str = ""
+    mode_color: str = "blue"
+    result_label: str = ""
     query: str = ""
     result_count: int = 0
     zero_result: bool = False
     docs: list[DocVM] = field(default_factory=list)
+
+
+@dataclass
+class KnowledgeTurnVM:
+    id: str = ""
+    turn_index: int = 0
+    turn_label: str = ""
+    question: str = ""
+    question_excerpt: str = ""
+    call_count: int = 0
+    document_count: int = 0
+    snippet_count: int = 0
+    summary_label: str = ""
+    queries: list[KnowledgeQueryVM] = field(default_factory=list)
+
+
+@dataclass
+class TurnNavVM:
+    id: str = ""
+    turn_label: str = ""
+    question_excerpt: str = ""
+    summary_label: str = ""
 
 
 @dataclass
@@ -600,11 +657,13 @@ class ReportVM:
     # flat list of EVERY tool call (success + fail) across all turns, in order —
     # drives the generic "All tool calls" drill-down in the Tools & actions tab.
     tool_calls_all: list[ToolCallVM] = field(default_factory=list)
+    tool_turns: list[ToolTurnVM] = field(default_factory=list)
     skill_loads: list[str] = field(default_factory=list)
     retry_signals: list[str] = field(default_factory=list)
     tool_failures: list[str] = field(default_factory=list)
     # knowledge
     knowledge_queries: list[KnowledgeQueryVM] = field(default_factory=list)
+    knowledge_turns: list[KnowledgeTurnVM] = field(default_factory=list)
     uncited_docs: list[DocVM] = field(default_factory=list)
     sources_seen: list[str] = field(default_factory=list)
     zero_result_queries: list[str] = field(default_factory=list)
@@ -741,7 +800,6 @@ class ReportVM:
     chat: list[ChatBlockVM] = field(default_factory=list)
     turns: list[TurnVM] = field(default_factory=list)
     mermaid: str = ""
-    raw_transcript: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -750,7 +808,7 @@ class ReportVM:
 
 
 def classify_tool(tc: ToolCall) -> str:
-    if tc.is_knowledge_search:
+    if tc.is_knowledge_activity:
         return "retrieval"
     name = (tc.name or "").lower()
     display = (tc.display_name or "").lower()
@@ -778,6 +836,14 @@ def _docs_from_tool(tc: ToolCall, cited_ids: set[str], uncited_ids: set[str]) ->
                 reference_id=rid,
                 cited=rid in cited_ids,
                 unused=rid in uncited_ids,
+                snippets=[
+                    SnippetVM(
+                        rank=snippet.rank or 0,
+                        page_label=f"Page {snippet.page_number}" if snippet.page_number is not None else "",
+                        text=snippet.text,
+                    )
+                    for snippet in d.snippets
+                ],
             )
         )
     return out
@@ -845,6 +911,21 @@ def _tool_to_vm(tc: ToolCall, cited_ids: set[str], uncited_ids: set[str]) -> Too
         diagnosis_rule=diag.matched_rule if diag else "",
         diagnosis_evidence=list(diag.evidence) if diag else [],
     )
+
+
+def _knowledge_mode_details(query) -> tuple[str, str, str]:
+    mode = (query.result_mode or "").lower()
+    category = (query.tool_category or "").lower()
+    tool_name = (query.tool_name or "").lower()
+    if mode == "semantic":
+        return "Semantic Search", "blue", "documents"
+    if mode == "lexical":
+        return "Lexical Search", "cyan", "documents"
+    if mode == "document" or any(token in tool_name for token in ("get_doc", "get_document")):
+        return "Document Retrieval", "grass", "documents"
+    if mode == "snippets" or category == "knowledgeretrieve":
+        return "Ranked Snippet Retrieval", "purple", "ranked snippets"
+    return "Knowledge Search", "blue", "documents"
 
 
 # ---------------------------------------------------------------------------
@@ -930,9 +1011,7 @@ def _summarize_following(following: list[ToolCall]) -> str:
     return txt
 
 
-def _derive_context(
-    tv: ToolCallVM, tc: ToolCall, siblings: list[ToolCall], position: int, turn_no: int
-) -> list[str]:
+def _derive_context(tv: ToolCallVM, tc: ToolCall, siblings: list[ToolCall], position: int, turn_no: int) -> list[str]:
     """Always-non-empty 'Context' facts for ANY call: provenance, honest empty-state
     notes, skill nature/category/billing, and causal in-turn linkage."""
     lines: list[str] = []
@@ -974,6 +1053,11 @@ def _build_chat(convo: Conversation, cited_ids: set[str], uncited_ids: set[str])
     chat: list[ChatBlockVM] = []
     current_docs: list = []  # docs of the nearest preceding KnowledgeSearch
     turn_no = 0
+    message_turns = {
+        id(message): turn.index
+        for turn in convo.turns
+        for message in ([turn.user_message] if turn.user_message is not None else []) + turn.bot_messages
+    }
     for i, m in enumerate(convo.messages):
         if m.is_user:
             turn_no += 1
@@ -986,9 +1070,10 @@ def _build_chat(convo: Conversation, cited_ids: set[str], uncited_ids: set[str])
         for pos, tv in enumerate(tool_vms):
             if not tv.call_id:
                 tv.call_id = f"tc-{i}-{pos}"
+            tv.turn_index = message_turns.get(id(m), turn_no)
             tv.context_lines = _derive_context(tv, m.tool_calls[pos], m.tool_calls, pos, turn_no)
         for tc in m.tool_calls:
-            if tc.is_knowledge_search and tc.retrieved_docs:
+            if tc.is_knowledge_activity and tc.retrieved_docs:
                 current_docs = tc.retrieved_docs
         citations = _map_citations(m.text, current_docs)
         thoughts = [t.text for t in m.thoughts if t.text.strip()]
@@ -1023,6 +1108,52 @@ def _flatten_tool_calls(chat: list[ChatBlockVM]) -> list[ToolCallVM]:
     return out
 
 
+def _build_tool_turns(convo: Conversation, tool_calls: list[ToolCallVM]) -> list[ToolTurnVM]:
+    """Group the already-built ToolCallVM objects by their conversation turn."""
+    turns: list[ToolTurnVM] = []
+    calls_by_turn: dict[int, list[ToolCallVM]] = {}
+    for call in tool_calls:
+        calls_by_turn.setdefault(call.turn_index, []).append(call)
+    for turn in convo.turns:
+        turn_calls = calls_by_turn.get(turn.index, [])
+        if not turn_calls:
+            continue
+        count = len(turn_calls)
+
+        failed_count = sum(1 for call in turn_calls if call.failed)
+        retrieval_count = sum(1 for call in turn_calls if call.kind == "retrieval")
+        action_count = sum(1 for call in turn_calls if call.kind == "action")
+        skill_count = sum(1 for call in turn_calls if call.kind == "skill")
+        parts = [f"{count} call{'s' if count != 1 else ''}"]
+        if failed_count:
+            parts.append(f"{failed_count} failed")
+        if retrieval_count:
+            parts.append(f"{retrieval_count} retrieval{'s' if retrieval_count != 1 else ''}")
+        if action_count:
+            parts.append(f"{action_count} action{'s' if action_count != 1 else ''}")
+        if skill_count:
+            parts.append(f"{skill_count} skill{'s' if skill_count != 1 else ''}")
+
+        question = turn.user_message.text if turn.user_message else "Conversation start"
+        turns.append(
+            ToolTurnVM(
+                id=f"tool-turn-{turn.index}",
+                turn_index=turn.index,
+                turn_label=f"Turn {turn.index}",
+                question=question,
+                question_excerpt=_clip(question, 96),
+                call_count=count,
+                failed_count=failed_count,
+                retrieval_count=retrieval_count,
+                action_count=action_count,
+                skill_count=skill_count,
+                summary_label=" · ".join(parts),
+                tool_calls=turn_calls,
+            )
+        )
+    return turns
+
+
 def _tool_call_index(chat: list[ChatBlockVM]) -> dict[str, ToolCallVM]:
     """Map real call_id -> ToolCallVM for cross-surface lookups (failure rows)."""
     idx: dict[str, ToolCallVM] = {}
@@ -1050,9 +1181,7 @@ def _build_turns(convo: Conversation) -> list[TurnVM]:
     for t in convo.turns:
         searches = [tc.query for tc in t.tool_calls if tc.is_knowledge_search and tc.query]
         actions = [
-            (tc.display_name or tc.name or "action")
-            for tc in t.tool_calls
-            if classify_tool(tc) in {"action", "skill"}
+            (tc.display_name or tc.name or "action") for tc in t.tool_calls if classify_tool(tc) in {"action", "skill"}
         ]
         cites: list[str] = []
         for m in t.bot_messages:
@@ -1387,9 +1516,7 @@ def _build_components(report: AnalysisReport, convo: Conversation | None) -> lis
                 ("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger)
             )
         if p.access_control_policy:
-            settings.append(
-                ("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy)
-            )
+            settings.append(("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy))
         settings.append(("Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory", None))
         if p.conversation_starters:
             settings.append(
@@ -1450,12 +1577,16 @@ def _agent_settings_rows(p) -> list[tuple[str, str, str, str | None]]:
     if p.authentication_mode:
         rows.append(("Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode))
     if p.authentication_trigger:
-        rows.append(("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger))
+        rows.append(
+            ("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger)
+        )
     if p.access_control_policy:
         rows.append(("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy))
     rows.append(("Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory", None))
     if p.conversation_starters:
-        rows.append(("Conversation starters", f"{len(p.conversation_starters)} starter(s)", "conversationStarters", None))
+        rows.append(
+            ("Conversation starters", f"{len(p.conversation_starters)} starter(s)", "conversationStarters", None)
+        )
     if p.recognizer_kind:
         rows.append(("Recognizer", p.recognizer_kind, "recognizer", None))
     if p.template:
@@ -1469,9 +1600,19 @@ def _branch(nodes: list, nid: str, key: str, child_count: int) -> None:
     label, icon, summary = _GROUP_META[key]
     nodes.append(
         ComponentNodeVM(
-            id=nid, depth=0, indent="8px", node_type="group", is_branch=True, category=label,
-            label=label, value=f"{child_count} item(s)", summary=summary, icon=icon,
-            child_count=child_count, selectable=False, search_text=f"{label} {summary}".lower(),
+            id=nid,
+            depth=0,
+            indent="8px",
+            node_type="group",
+            is_branch=True,
+            category=label,
+            label=label,
+            value=f"{child_count} item(s)",
+            summary=summary,
+            icon=icon,
+            child_count=child_count,
+            selectable=False,
+            search_text=f"{label} {summary}".lower(),
         )
     )
 
@@ -1489,9 +1630,18 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
                 ex = explain(key, kvalue)
                 nodes.append(
                     ComponentNodeVM(
-                        id=f"agent-{j}", parent_id="g-agent", depth=1, indent="26px", node_type="leaf",
-                        category="Agent", label=label, value=value, summary=ex.summary, doc=ex.doc or "",
-                        documented=ex.documented, icon="settings",
+                        id=f"agent-{j}",
+                        parent_id="g-agent",
+                        depth=1,
+                        indent="26px",
+                        node_type="leaf",
+                        category="Agent",
+                        label=label,
+                        value=value,
+                        summary=ex.summary,
+                        doc=ex.doc or "",
+                        documented=ex.documented,
+                        icon="settings",
                         search_text=f"{label} {value} agent {ex.summary}".lower(),
                     )
                 )
@@ -1506,9 +1656,18 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
                 ex = explain("knowledge")
             nodes.append(
                 ComponentNodeVM(
-                    id=f"kb-{j}", parent_id="g-knowledge", depth=1, indent="26px", node_type="leaf",
-                    category="Knowledge", label=ks.display_name or "(knowledge source)", value=ks.source_kind or "",
-                    summary=ex.summary, doc=ex.doc or "", documented=ex.documented, icon="book-open",
+                    id=f"kb-{j}",
+                    parent_id="g-knowledge",
+                    depth=1,
+                    indent="26px",
+                    node_type="leaf",
+                    category="Knowledge",
+                    label=ks.display_name or "(knowledge source)",
+                    value=ks.source_kind or "",
+                    summary=ex.summary,
+                    doc=ex.doc or "",
+                    documented=ex.documented,
+                    icon="book-open",
                     search_text=f"{ks.display_name} {ks.source_kind} {ks.source_site} {ex.summary}".lower(),
                 )
             )
@@ -1525,10 +1684,22 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
             src = f" · {pr.source}" if pr.source else ""
             nodes.append(
                 ComponentNodeVM(
-                    id=pid, parent_id="g-tools", depth=1, indent="26px", node_type="provider", is_branch=True,
-                    category="Tools", label=pr.display_name, value=f"{len(pr.operations)} operation(s) · {origin}{src}",
-                    summary=pex.summary, doc=pex.doc or "", documented=pex.documented, icon=picon, kind_badge=badge,
-                    child_count=len(pr.operations), selectable=True,
+                    id=pid,
+                    parent_id="g-tools",
+                    depth=1,
+                    indent="26px",
+                    node_type="provider",
+                    is_branch=True,
+                    category="Tools",
+                    label=pr.display_name,
+                    value=f"{len(pr.operations)} operation(s) · {origin}{src}",
+                    summary=pex.summary,
+                    doc=pex.doc or "",
+                    documented=pex.documented,
+                    icon=picon,
+                    kind_badge=badge,
+                    child_count=len(pr.operations),
+                    selectable=True,
                     search_text=f"{pr.display_name} {badge} {pr.kind} {pex.summary}".lower(),
                 )
             )
@@ -1541,9 +1712,19 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
                     osum, odoc, odoc_ok = pex.summary, pex.doc or "", pex.documented
                 nodes.append(
                     ComponentNodeVM(
-                        id=f"op-{pi}-{oi}", parent_id=pid, depth=2, indent="44px", node_type="leaf",
-                        category="Tools", label=olabel, value=oval, summary=osum, doc=odoc, documented=odoc_ok,
-                        icon="dot", kind_badge=badge,
+                        id=f"op-{pi}-{oi}",
+                        parent_id=pid,
+                        depth=2,
+                        indent="44px",
+                        node_type="leaf",
+                        category="Tools",
+                        label=olabel,
+                        value=oval,
+                        summary=osum,
+                        doc=odoc,
+                        documented=odoc_ok,
+                        icon="dot",
+                        kind_badge=badge,
                         search_text=f"{olabel} {op.name} {badge} {pr.display_name} {osum}".lower(),
                     )
                 )
@@ -1557,9 +1738,18 @@ def _build_component_nodes(report: AnalysisReport, convo: Conversation | None) -
             value = ev.type or (ev.default_value or "")
             nodes.append(
                 ComponentNodeVM(
-                    id=f"env-{j}", parent_id="g-env", depth=1, indent="26px", node_type="leaf",
-                    category="Environment variables", label=label, value=value, summary=ex.summary,
-                    doc=ex.doc or "", documented=ex.documented, icon="braces",
+                    id=f"env-{j}",
+                    parent_id="g-env",
+                    depth=1,
+                    indent="26px",
+                    node_type="leaf",
+                    category="Environment variables",
+                    label=label,
+                    value=value,
+                    summary=ex.summary,
+                    doc=ex.doc or "",
+                    documented=ex.documented,
+                    icon="braces",
                     search_text=f"{label} {value} environment variable {ex.summary}".lower(),
                 )
             )
@@ -1662,7 +1852,12 @@ def _build_quotes(report: AnalysisReport) -> list[QuoteCheckVM]:
     qf = report.quote_faithfulness
     if qf is None:
         return []
-    rank = {"unattributed-quote": 0, "dangling-attribution": 1, "attributed-source-in-sandbox": 2, "verified-in-tool-output": 3}
+    rank = {
+        "unattributed-quote": 0,
+        "dangling-attribution": 1,
+        "attributed-source-in-sandbox": 2,
+        "verified-in-tool-output": 3,
+    }
     out: list[QuoteCheckVM] = []
     for q in sorted(qf.quotes, key=lambda q: rank.get(q.verdict, 4)):
         label, icon, color = _VERDICT_STYLE.get(q.verdict, (q.verdict, "quote", "gray"))
@@ -1709,13 +1904,17 @@ def _build_timeline(convo: Conversation | None) -> list[TimelineTurnVM]:
         events: list[TimelineEventVM] = []
         if turn.user_message is not None and turn.user_message.text.strip():
             events.append(
-                TimelineEventVM(kind="user", icon="user", color="grass", label="User", text=_clip(turn.user_message.text, 240))
+                TimelineEventVM(
+                    kind="user", icon="user", color="grass", label="User", text=_clip(turn.user_message.text, 240)
+                )
             )
         for m in turn.bot_messages:
             for th in m.thoughts:
                 if th.text.strip():
                     events.append(
-                        TimelineEventVM(kind="thought", icon="brain", color="purple", label="Thought", text=_clip(th.text, 200))
+                        TimelineEventVM(
+                            kind="thought", icon="brain", color="purple", label="Thought", text=_clip(th.text, 200)
+                        )
                     )
             for tc in m.tool_calls:
                 kind = classify_tool(tc)
@@ -1757,8 +1956,8 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcript: str = "") -> ReportVM:
-    vm = ReportVM(raw_transcript=raw_transcript[:200000])
+def map_report(report: AnalysisReport, convo: Conversation | None) -> ReportVM:
+    vm = ReportVM()
 
     p = report.agent
     if p is not None:
@@ -1794,8 +1993,21 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
     if report.knowledge is not None:
         cited_ids = set(report.knowledge.cited_reference_ids)
         uncited_ids = {d.reference_id for d in report.knowledge.uncited_docs if d.reference_id}
-        vm.knowledge_queries = [
-            KnowledgeQueryVM(
+        vm.knowledge_queries = []
+        turn_result_counts: dict[int, int] = {}
+        turn_groups: dict[int, KnowledgeTurnVM] = {}
+        for q in report.knowledge.queries:
+            turn_result_counts[q.turn_index] = turn_result_counts.get(q.turn_index, 0) + 1
+            turn_result_index = turn_result_counts[q.turn_index]
+            mode_label, mode_color, result_unit = _knowledge_mode_details(q)
+            result_word = result_unit if q.result_count != 1 else result_unit.removesuffix("s")
+            query_vm = KnowledgeQueryVM(
+                anchor_id=f"knowledge-turn-{q.turn_index}-result-{turn_result_index}",
+                sequence_label=f"Result {turn_result_index}",
+                tool_name=q.tool_name or "KnowledgeSearch",
+                mode_label=mode_label,
+                mode_color=mode_color,
+                result_label=f"{q.result_count} {result_word}",
                 query=q.query,
                 result_count=q.result_count,
                 zero_result=q.zero_result,
@@ -1806,14 +2018,57 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
                         reference_id=d.reference_id or "",
                         cited=(d.reference_id in cited_ids),
                         unused=(d.reference_id in uncited_ids),
+                        snippets=[
+                            SnippetVM(
+                                rank=snippet.rank or 0,
+                                page_label=(f"Page {snippet.page_number}" if snippet.page_number is not None else ""),
+                                text=snippet.text,
+                            )
+                            for snippet in d.snippets
+                        ],
                     )
                     for d in q.docs
                 ],
             )
-            for q in report.knowledge.queries
-        ]
+            vm.knowledge_queries.append(query_vm)
+
+            turn_vm = turn_groups.setdefault(
+                q.turn_index,
+                KnowledgeTurnVM(
+                    id=f"knowledge-turn-{q.turn_index}",
+                    turn_index=q.turn_index,
+                    turn_label=f"Turn {q.turn_index}",
+                    question=q.user_question or "Conversation start",
+                    question_excerpt=_clip(q.user_question or "Conversation start", 96),
+                ),
+            )
+            turn_vm.queries.append(query_vm)
+            turn_vm.call_count += 1
+            turn_vm.document_count += len(q.docs)
+            turn_vm.snippet_count += sum(len(doc.snippets) for doc in q.docs)
+
+        vm.knowledge_turns = sorted(turn_groups.values(), key=lambda turn: turn.turn_index)
+        for turn in vm.knowledge_turns:
+            parts = [f"{turn.call_count} call{'s' if turn.call_count != 1 else ''}"]
+            if turn.document_count:
+                parts.append(f"{turn.document_count} doc{'s' if turn.document_count != 1 else ''}")
+            if turn.snippet_count:
+                parts.append(f"{turn.snippet_count} snippet{'s' if turn.snippet_count != 1 else ''}")
+            turn.summary_label = " · ".join(parts)
         vm.uncited_docs = [
-            DocVM(title=d.title or d.reference_id or "(untitled)", url=d.url or "", reference_id=d.reference_id or "")
+            DocVM(
+                title=d.title or d.reference_id or "(untitled)",
+                url=d.url or "",
+                reference_id=d.reference_id or "",
+                snippets=[
+                    SnippetVM(
+                        rank=snippet.rank or 0,
+                        page_label=f"Page {snippet.page_number}" if snippet.page_number is not None else "",
+                        text=snippet.text,
+                    )
+                    for snippet in d.snippets
+                ],
+            )
             for d in report.knowledge.uncited_docs
         ]
         vm.sources_seen = list(report.knowledge.sources_seen)
@@ -1891,9 +2146,7 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
         vm.sandbox_authoring_label = (
             "Turn " + ", ".join(str(t) for t in ci.authoring_turns) if ci.authoring_turns else "—"
         )
-        vm.sandbox_analysis_label = (
-            "Turn " + ", ".join(str(t) for t in ci.analysis_turns) if ci.analysis_turns else "—"
-        )
+        vm.sandbox_analysis_label = "Turn " + ", ".join(str(t) for t in ci.analysis_turns) if ci.analysis_turns else "—"
         vm.skill_gaps = _build_skill_gaps(report)
         vm.has_skill_gaps = bool(vm.skill_gaps)
 
@@ -2002,7 +2255,12 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
             icon, color = _CHECK_STYLE.get(c.status, ("circle-help", "gray"))
             vm.checks.append(
                 CheckVM(
-                    instruction=c.instruction, check=c.check, status=c.status, evidence=c.evidence, icon=icon, color=color
+                    instruction=c.instruction,
+                    check=c.check,
+                    status=c.status,
+                    evidence=c.evidence,
+                    icon=icon,
+                    color=color,
                 )
             )
 
@@ -2019,12 +2277,11 @@ def map_report(report: AnalysisReport, convo: Conversation | None, raw_transcrip
         # flat, ordered list of EVERY tool call (success + fail) reusing the chat VMs,
         # so the Tools & actions tab can drill into any call with full untruncated data.
         vm.tool_calls_all = _flatten_tool_calls(vm.chat)
+        vm.tool_turns = _build_tool_turns(convo, vm.tool_calls_all)
         # backfill each failure row with its full call VM (params + response/error),
         # matched by real call_id, so the failures card reuses the universal renderer.
         if report.tool_failures is not None:
-            vm.tool_failure_rows = _build_tool_failures(
-                report, _tool_call_index(vm.chat)
-            )
+            vm.tool_failure_rows = _build_tool_failures(report, _tool_call_index(vm.chat))
 
     return vm
 
