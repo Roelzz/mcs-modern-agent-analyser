@@ -9,7 +9,9 @@ Two on-the-wire shapes are supported and auto-detected:
            "thoughts":  [ { id, status, title, description } ] } ]
 
 2. **Dataverse `conversationtranscript` envelope** — the Bot Framework activity
-   log you get when copying the `content` column out of Dataverse::
+   log you get when copying the `content` column out of Dataverse. Both older
+   ``trace`` activities and newer ``ToolCallTrace`` / ``ThinkingTrace`` events
+   are normalised::
 
        { "activities": [ { "type": "message"|"trace"|"event",
                            "from": { "id": "...", "role": 0|1 },
@@ -31,7 +33,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from models import Conversation, FileAttachment, Message, RetrievedDoc, Thought, ToolCall, Turn
+from models import Conversation, FileAttachment, Message, RetrievedDoc, RetrievedSnippet, Thought, ToolCall, Turn
 
 _RESULT_COUNT_RE = re.compile(r"\[\s*(\d+)\s+results?\s*\]", re.IGNORECASE)
 _ZERO_RESULT_RE = re.compile(r"\b(no results|0 results|nothing found|no relevant)\b", re.IGNORECASE)
@@ -49,6 +51,150 @@ _METADATA_VALUE_TYPES = {"conversationinfo", "sessioninfo", "channeldata"}
 _THOUGHT_VALUE_HINTS = ("thought", "reason", "plan", "chainofthought", "deliberat")
 
 
+def _parse_structured_knowledge_result(raw: object) -> tuple[list[RetrievedDoc], int | None, bool] | None:
+    if not isinstance(raw, dict):
+        return None
+    results = raw.get("results")
+    snippets = raw.get("snippets")
+    documents = raw.get("documents")
+    count_value = raw.get("count")
+    if not isinstance(count_value, int):
+        count_value = raw.get("returned")
+    count = count_value if isinstance(count_value, int) else None
+    single_document = raw.get("document") if isinstance(raw.get("document"), dict) else raw
+    has_single_document = bool(
+        isinstance(single_document, dict)
+        and (single_document.get("referenceId") or single_document.get("reference_id"))
+        and any(
+            single_document.get(key)
+            for key in ("title", "fileName", "name", "url", "webUrl", "summary", "content", "text", "body")
+        )
+    )
+    if (
+        not isinstance(results, list)
+        and not isinstance(snippets, list)
+        and not isinstance(documents, list)
+        and not has_single_document
+        and count is None
+    ):
+        return None
+
+    docs: list[RetrievedDoc] = []
+    if isinstance(results, list):
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            docs.append(
+                RetrievedDoc(
+                    title=item.get("title") or item.get("fileName") or item.get("name"),
+                    url=item.get("url"),
+                    reference_id=item.get("referenceId") or item.get("reference_id"),
+                    snippet=item.get("summary") or item.get("snippet") or item.get("text"),
+                )
+            )
+
+    if isinstance(documents, list):
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            docs.append(
+                RetrievedDoc(
+                    title=item.get("title") or item.get("fileName") or item.get("name"),
+                    url=item.get("url") or item.get("webUrl"),
+                    reference_id=item.get("referenceId") or item.get("reference_id"),
+                    snippet=(
+                        item.get("summary")
+                        or item.get("snippet")
+                        or item.get("content")
+                        or item.get("text")
+                        or item.get("body")
+                    ),
+                )
+            )
+
+    if has_single_document:
+        docs.append(
+            RetrievedDoc(
+                title=(single_document.get("title") or single_document.get("fileName") or single_document.get("name")),
+                url=single_document.get("url") or single_document.get("webUrl"),
+                reference_id=(single_document.get("referenceId") or single_document.get("reference_id")),
+                snippet=(
+                    single_document.get("summary")
+                    or single_document.get("snippet")
+                    or single_document.get("content")
+                    or single_document.get("text")
+                    or single_document.get("body")
+                ),
+            )
+        )
+
+    if isinstance(snippets, list) and raw.get("referenceId"):
+        parsed_snippets = [
+            RetrievedSnippet(
+                rank=item.get("rank") if isinstance(item.get("rank"), int) else None,
+                page_number=item.get("pageNumber") if isinstance(item.get("pageNumber"), int) else None,
+                text=str(item.get("text") or "").strip(),
+            )
+            for item in snippets
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        snippet_text = "\n\n".join(item.text for item in parsed_snippets)
+        reference_id = str(raw["referenceId"])
+        existing_doc = next((doc for doc in docs if doc.reference_id == reference_id), None)
+        if existing_doc is not None:
+            existing_doc.snippet = snippet_text or existing_doc.snippet
+            existing_doc.snippets = parsed_snippets
+        else:
+            docs.append(
+                RetrievedDoc(
+                    reference_id=reference_id,
+                    snippet=snippet_text or None,
+                    snippets=parsed_snippets,
+                )
+            )
+
+    deduped: list[RetrievedDoc] = []
+    by_key: dict[str, RetrievedDoc] = {}
+
+    def doc_keys(doc: RetrievedDoc) -> list[str]:
+        keys: list[str] = []
+        if doc.reference_id:
+            keys.append(f"ref:{doc.reference_id.strip().lower()}")
+        if doc.url:
+            keys.append(f"url:{doc.url.strip().lower()}")
+        if doc.title:
+            keys.append(f"title:{doc.title.strip().lower()}")
+        return keys
+
+    for doc in docs:
+        keys = doc_keys(doc)
+        if not keys:
+            deduped.append(doc)
+            continue
+        existing = next((by_key[key] for key in keys if key in by_key), None)
+        if existing is None:
+            deduped.append(doc)
+            existing = doc
+        else:
+            existing.title = existing.title or doc.title
+            existing.url = existing.url or doc.url
+            existing.reference_id = existing.reference_id or doc.reference_id
+            existing.snippet = existing.snippet or doc.snippet
+            known_snippets = {(snippet.rank, snippet.page_number, snippet.text) for snippet in existing.snippets}
+            existing.snippets.extend(
+                snippet
+                for snippet in doc.snippets
+                if (snippet.rank, snippet.page_number, snippet.text) not in known_snippets
+            )
+        for key in doc_keys(existing) + keys:
+            by_key[key] = existing
+    docs = deduped
+
+    if count is None:
+        count = len(docs)
+    return docs, count, count == 0
+
+
 def parse_knowledge_result(text: str | None) -> tuple[list[RetrievedDoc], int | None, bool]:
     """Parse a KnowledgeSearch-style result blob.
 
@@ -57,6 +203,13 @@ def parse_knowledge_result(text: str | None) -> tuple[list[RetrievedDoc], int | 
     """
     if not text:
         return [], None, False
+
+    try:
+        structured = _parse_structured_knowledge_result(json.loads(text))
+    except (TypeError, ValueError):
+        structured = None
+    if structured is not None:
+        return structured
 
     count: int | None = None
     m = _RESULT_COUNT_RE.search(text)
@@ -121,14 +274,40 @@ def _parse_tool_call(raw: dict) -> ToolCall:
     params = raw.get("params")
     result = _coerce_payload_text(raw.get("result"))
     error = _coerce_payload_text(raw.get("error"))
+    result_mode: str | None = None
+    if result:
+        try:
+            result_payload = json.loads(result)
+        except (TypeError, ValueError):
+            result_payload = None
+        if isinstance(result_payload, dict) and result_payload.get("mode"):
+            result_mode = str(result_payload["mode"])
+    tool_name = str(raw.get("name") or "")
+    if not result_mode and any(token in tool_name.lower() for token in ("get_doc", "get_document")):
+        result_mode = "document"
     docs, count, zero = parse_knowledge_result(result)
+    if result_mode == "document" and not docs and result:
+        params_dict = params if isinstance(params, dict) else {}
+        docs = [
+            RetrievedDoc(
+                title=params_dict.get("title") or params_dict.get("fileName"),
+                url=params_dict.get("url") or params_dict.get("webUrl"),
+                reference_id=params_dict.get("referenceId") or params_dict.get("reference_id"),
+                snippet=result,
+            )
+        ]
+        count = 1
+        zero = False
     return ToolCall(
         id=raw.get("id"),
-        name=raw.get("name"),
+        name=tool_name or None,
         status=raw.get("status"),
         display_name=raw.get("displayName"),
+        category=raw.get("category"),
+        kind=raw.get("kind"),
         params=params if isinstance(params, dict) else {},
         result=result,
+        result_mode=result_mode,
         error=error,
         retrieved_docs=docs,
         result_count=count,
@@ -207,13 +386,15 @@ def _looks_like_activities(items: list[dict]) -> bool:
     return False
 
 
-def _activity_role(raw: dict) -> str:
+def activity_role(raw: dict) -> str:
     """Map a Bot Framework participant onto ``user`` / ``bot``.
 
     Dataverse serialises the role as a number (0 = bot, 1 = user); the public
     Bot Framework schema uses the strings ``"bot"`` / ``"user"``."""
-    sender = raw.get("from")
-    role = sender.get("role") if isinstance(sender, dict) else None
+    role = raw.get("role")
+    if role is None:
+        sender = raw.get("from")
+        role = sender.get("role") if isinstance(sender, dict) else None
 
     if isinstance(role, str):
         low = role.strip().lower()
@@ -309,6 +490,75 @@ def _trace_to_thought(raw: dict, value_type: str) -> dict | None:
     }
 
 
+def _event_to_tool_call(raw: dict) -> dict | None:
+    name = str(raw.get("name") or "")
+    if not name.lower().startswith("toolcalltrace:"):
+        return None
+    value = raw.get("value")
+    if not isinstance(value, dict):
+        return None
+
+    tool_name = value.get("toolName") or value.get("name")
+    tool_id = value.get("toolCallId") or value.get("id") or raw.get("id")
+    if not tool_name or not tool_id:
+        return None
+
+    status = value.get("toolCallStatus")
+    if isinstance(status, str):
+        status = status.lower()
+    return {
+        "id": str(tool_id),
+        "name": str(tool_name),
+        "status": status,
+        "displayName": value.get("toolDisplayName") or value.get("displayName"),
+        "category": value.get("toolCategory"),
+        "kind": value.get("toolKind"),
+        "params": value.get("filledParameters") or value.get("parameters"),
+        "result": value.get("result"),
+        "error": value.get("error"),
+    }
+
+
+def _merge_pending_tool(pending_tools: list[dict], tool: dict, tool_events: dict[str, dict]) -> None:
+    """Merge tool lifecycle events by ID, including events across bot messages."""
+    tool_id = tool.get("id")
+    if tool_id and tool_id in tool_events:
+        tool_events[tool_id].update({key: value for key, value in tool.items() if value not in (None, "", {}, [])})
+        return
+    if tool_id:
+        tool_events[tool_id] = tool
+    pending_tools.append(tool)
+
+
+def _collapse_thinking_events(events: list[dict]) -> dict | None:
+    """Collapse streamed ThinkingTrace chunks and their final duplicate."""
+    chunks = [
+        str((event.get("value") or {}).get("thinkingText") or "")
+        for event in events
+        if isinstance(event.get("value"), dict)
+    ]
+    chunks = [chunk for chunk in chunks if chunk]
+    if not chunks:
+        return None
+
+    previous = "".join(chunks[:-1]).strip()
+    final = chunks[-1].strip()
+    normalized_final = re.sub(r"\s+", " ", final)
+    previous_matches_final = previous and re.sub(r"\s+", " ", previous) == normalized_final
+    cumulative_stream = len(chunks) > 1 and all(
+        normalized_final.startswith(re.sub(r"\s+", " ", chunk.strip())) for chunk in chunks[:-1] if chunk.strip()
+    )
+    text = final if previous_matches_final or cumulative_stream else "".join(chunks).strip()
+    if not text:
+        return None
+    return {
+        "id": events[-1].get("id"),
+        "status": "completed",
+        "title": text,
+        "description": text,
+    }
+
+
 def _normalise_activities(activities: list[dict]) -> list[dict]:
     """Flatten Bot Framework activities into the modern flat-message shape.
 
@@ -318,10 +568,33 @@ def _normalise_activities(activities: list[dict]) -> list[dict]:
     messages: list[dict] = []
     pending_tools: list[dict] = []
     pending_thoughts: list[dict] = []
+    thinking_events: list[dict] = []
+    tool_events: dict[str, dict] = {}
     unknown_traces: set[str] = set()
+
+    def flush_thinking() -> None:
+        if not thinking_events:
+            return
+        thought = _collapse_thinking_events(thinking_events)
+        if thought is not None:
+            pending_thoughts.append(thought)
+        thinking_events.clear()
 
     for act in activities:
         kind = str(act.get("type") or "").lower()
+        event_name = str(act.get("name") or "")
+
+        if kind == "event" and event_name.lower() == "thinkingtrace":
+            thinking_events.append(act)
+            continue
+
+        flush_thinking()
+
+        if kind == "event":
+            tool = _event_to_tool_call(act)
+            if tool is not None:
+                _merge_pending_tool(pending_tools, tool, tool_events)
+            continue
 
         if kind == "trace":
             value_type = str(act.get("valueType") or act.get("name") or "").lower()
@@ -333,7 +606,7 @@ def _normalise_activities(activities: list[dict]) -> list[dict]:
                 continue
             tool = _trace_to_tool_call(act)
             if tool is not None:
-                pending_tools.append(tool)
+                _merge_pending_tool(pending_tools, tool, tool_events)
                 continue
             if value_type:
                 unknown_traces.add(value_type)
@@ -342,7 +615,7 @@ def _normalise_activities(activities: list[dict]) -> list[dict]:
         if kind != "message":
             continue  # event / typing / conversationUpdate carry no transcript content
 
-        role = _activity_role(act)
+        role = activity_role(act)
         channel = act.get("channelData") if isinstance(act.get("channelData"), dict) else {}
         tool_calls = [tc for tc in (channel.get("toolCalls") or []) if isinstance(tc, dict)]
         thoughts = [t for t in (channel.get("thoughts") or []) if isinstance(t, dict)]
@@ -363,6 +636,8 @@ def _normalise_activities(activities: list[dict]) -> list[dict]:
                 "timestamp": _activity_timestamp(act),
             }
         )
+
+    flush_thinking()
 
     # Traces that never found a following bot message still belong to the run.
     if pending_tools or pending_thoughts:

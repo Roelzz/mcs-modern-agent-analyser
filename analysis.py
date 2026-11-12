@@ -108,7 +108,7 @@ _ACTION_NAME_PREFIXES = ("send", "list", "create", "update", "delete", "post", "
 
 def classify_tool_kind(tc: ToolCall) -> str:
     """retrieval (knowledge search) / action (side-effect) / skill / other."""
-    if tc.is_knowledge_search:
+    if tc.is_knowledge_activity:
         return "retrieval"
     name = (tc.name or "").lower()
     display = (tc.display_name or "").lower()
@@ -141,7 +141,7 @@ def classify_runtime_provider(tc: ToolCall) -> tuple[str, str, str, str | None] 
     tool call, or None if it isn't an action/skill. MCP servers expose tools as
     ``Server:tool``; skills surface as ``Loaded Skill: <name>``; everything else
     is grouped as a neutral agent action."""
-    if tc.is_knowledge_search:
+    if tc.is_knowledge_activity:
         return None
     kind = classify_tool_kind(tc)
     if kind not in {"action", "skill"}:
@@ -162,7 +162,9 @@ def classify_runtime_provider(tc: ToolCall) -> tuple[str, str, str, str | None] 
     return ("action", "Agent actions", op_name, op_disp)
 
 
-def _merge_operation(provider: ToolProvider, name: str, display: str | None, desc: str | None, configured: bool) -> None:
+def _merge_operation(
+    provider: ToolProvider, name: str, display: str | None, desc: str | None, configured: bool
+) -> None:
     key = (name or "").lower()
     for op in provider.operations:
         if (op.name or "").lower() == key:
@@ -209,8 +211,12 @@ def build_tool_hierarchy(profile: AgentProfile | None, convo: Conversation | Non
     if profile is not None:
         for cp in profile.tool_providers:
             pr = get_or_make(
-                cp.kind, cp.display_name, configured=True,
-                schema_name=cp.schema_name, description=cp.description, source=cp.source,
+                cp.kind,
+                cp.display_name,
+                configured=True,
+                schema_name=cp.schema_name,
+                description=cp.description,
+                source=cp.source,
             )
             pr.configured = True
             for op in cp.operations:
@@ -323,7 +329,7 @@ def parse_sharepoint_path(url: str | None) -> tuple[str, str] | None:
     return ("/".join(cleaned), cleaned[0])
 
 
-def reference_index(convo: Conversation | None) -> dict[str, dict]:
+def reference_index(convo: Conversation | None, *, searches_only: bool = False) -> dict[str, dict]:
     """Map each retrieved doc's ReferenceId → {title, url, turns, count, queries}.
 
     Lets us measure cross-search overlap (B2) and which turn first saw a doc (C1)."""
@@ -332,7 +338,9 @@ def reference_index(convo: Conversation | None) -> dict[str, dict]:
         return idx
     for turn in convo.turns:
         for tc in turn.tool_calls:
-            if not tc.is_knowledge_search:
+            if searches_only and not tc.is_knowledge_search:
+                continue
+            if not tc.is_knowledge_activity:
                 continue
             for d in tc.retrieved_docs:
                 key = d.reference_id or (d.url or d.title or "")
@@ -364,7 +372,7 @@ def code_interpreter_signals(turn) -> list[SandboxSignal]:
     patterns = _code_interpreter_patterns()
     hay: list[str] = [t.text for t in turn.thoughts if t.text]
     for tc in turn.tool_calls:
-        if tc.is_knowledge_search:
+        if tc.is_knowledge_activity:
             for d in tc.retrieved_docs:
                 if d.snippet:
                     hay.append(d.snippet)
@@ -618,24 +626,34 @@ def analyze_knowledge(convo: Conversation) -> KnowledgeAnalysis:
     distinct: dict[str, RetrievedDoc] = {}
     sources: set[str] = set()
 
-    for tc in convo.tool_calls:
-        if not tc.is_knowledge_search:
-            continue
-        queries.append(
-            KnowledgeQuery(
-                query=tc.query or "(no query)",
-                result_count=tc.result_count if tc.result_count is not None else len(tc.retrieved_docs),
-                docs=tc.retrieved_docs,
-                zero_result=tc.zero_result,
+    for turn in convo.turns:
+        user_question = turn.user_message.text if turn.user_message else ""
+        for tc in turn.tool_calls:
+            if not tc.is_knowledge_activity:
+                continue
+            params = tc.params if isinstance(tc.params, dict) else {}
+            query = tc.query or params.get("referenceId") or params.get("reference_id") or "(no query)"
+            queries.append(
+                KnowledgeQuery(
+                    query=str(query),
+                    result_count=tc.result_count if tc.result_count is not None else len(tc.retrieved_docs),
+                    docs=tc.retrieved_docs,
+                    zero_result=tc.zero_result,
+                    tool_name=tc.name or "",
+                    tool_category=tc.category or "",
+                    result_mode=tc.result_mode or "",
+                    is_search=tc.is_knowledge_search,
+                    turn_index=turn.index,
+                    user_question=user_question,
+                )
             )
-        )
-        for doc in tc.retrieved_docs:
-            key = doc.reference_id or doc.title or doc.url or ""
-            if key and key not in distinct:
-                distinct[key] = doc
-            root = _site_root(doc.url)
-            if root:
-                sources.add(root)
+            for doc in tc.retrieved_docs:
+                key = doc.reference_id or doc.title or doc.url or ""
+                if key and key not in distinct:
+                    distinct[key] = doc
+                root = _site_root(doc.url)
+                if root:
+                    sources.add(root)
 
     # A retrieved doc is "used" if its (normalised) title or reference id shows
     # up anywhere in the bot's text. Everything else is an unused retrieval.
@@ -656,7 +674,7 @@ def analyze_knowledge(convo: Conversation) -> KnowledgeAnalysis:
         sources_seen=sorted(sources),
         cited_reference_ids=cited_refids,
         uncited_docs=uncited,
-        zero_result_queries=[q.query for q in queries if q.zero_result],
+        zero_result_queries=[q.query for q in queries if q.is_search and q.zero_result],
     )
 
 
@@ -688,7 +706,7 @@ def analyze_citations(convo: Conversation) -> CitationAnalysis:
         if len(final.strip()) < _SUBSTANTIVE_MIN or _looks_intermediate(final):
             continue
         has_citation = bool(_CITATION_RE.search(final))
-        ran_search = any(tc.is_knowledge_search for tc in turn.tool_calls)
+        ran_search = any(tc.is_knowledge_activity for tc in turn.tool_calls)
         if not has_citation and not ran_search:
             uncited_answers += 1
 
@@ -748,8 +766,9 @@ def assess_groundedness(convo: Conversation, knowledge: KnowledgeAnalysis | None
             continue
 
         searches = [tc for tc in turn.tool_calls if tc.is_knowledge_search]
-        got_docs = any(tc.retrieved_docs for tc in searches)
-        zero_results = searches and all(tc.zero_result or not tc.retrieved_docs for tc in searches)
+        knowledge_activity = [tc for tc in turn.tool_calls if tc.is_knowledge_activity]
+        got_docs = any(tc.retrieved_docs or (tc.result_count or 0) > 0 for tc in knowledge_activity)
+        zero_results = searches and all(tc.zero_result or not tc.retrieved_docs for tc in searches) and not got_docs
         substantive = len(final.strip()) >= _SUBSTANTIVE_MIN
         label = _truncate(turn.user_message.text, 80)
 
@@ -946,15 +965,14 @@ def analyze_knowledge_effectiveness(
     if knowledge is None:
         return None
 
+    search_queries = [query for query in knowledge.queries if query.is_search]
     eff = KnowledgeEffectiveness(
-        total_searches=len(knowledge.queries),
+        total_searches=len(search_queries),
         zero_result_searches=len(knowledge.zero_result_queries),
         distinct_docs=len(knowledge.distinct_docs),
     )
     if eff.total_searches:
-        eff.avg_docs_per_search = round(
-            sum(len(q.docs) for q in knowledge.queries) / eff.total_searches, 2
-        )
+        eff.avg_docs_per_search = round(sum(len(q.docs) for q in search_queries) / eff.total_searches, 2)
 
     def _key(doc: RetrievedDoc) -> str:
         return doc.reference_id or doc.title or doc.url or ""
@@ -1052,7 +1070,7 @@ def verify_citations(convo: Conversation | None, knowledge: KnowledgeAnalysis | 
         turn_docs: list[tuple[RetrievedDoc, str | None]] = []
         turn_keys: set[str] = set()
         for tc in turn.tool_calls:
-            if tc.is_knowledge_search:
+            if tc.is_knowledge_activity:
                 for d in tc.retrieved_docs:
                     turn_docs.append((d, tc.query))
                     turn_keys.add(_key(d))
@@ -1133,9 +1151,7 @@ def estimate_credits(profile: AgentProfile | None, convo: Conversation | None) -
     rates = credit_rates()
     items: list[CreditLineItem] = []
     reasoning = bool(
-        profile
-        and profile.model_series
-        and any(s in profile.model_series.lower() for s in reasoning_model_series())
+        profile and profile.model_series and any(s in profile.model_series.lower() for s in reasoning_model_series())
     )
     total_tokens = 0
 
@@ -1166,9 +1182,7 @@ def estimate_credits(profile: AgentProfile | None, convo: Conversation | None) -
 
         final = turn.final_bot_text
         substantive = (
-            turn.user_message is not None
-            and len(final.strip()) >= _SUBSTANTIVE_MIN
-            and not _looks_intermediate(final)
+            turn.user_message is not None and len(final.strip()) >= _SUBSTANTIVE_MIN and not _looks_intermediate(final)
         )
         if substantive and not searches:
             items.append(
@@ -1381,7 +1395,9 @@ def detect_repetition(convo: Conversation) -> RepetitionAnalysis:
                 sim = _jaccard(tok_a, tok_b)
                 if sim >= thresh:
                     signals.append(
-                        RepetitionSignal(kind=kind, turns=[ta, tb], similarity=round(sim, 2), excerpt=_truncate(txt_a, 140))
+                        RepetitionSignal(
+                            kind=kind, turns=[ta, tb], similarity=round(sim, 2), excerpt=_truncate(txt_a, 140)
+                        )
                     )
                     seen.add(tb)
 
@@ -1438,8 +1454,8 @@ def assess_answer_groundedness(
             continue
 
         cited = len(_CITATION_RE.findall(final)) + len(_REFID_RE.findall(final))
-        searches = [tc for tc in turn.tool_calls if tc.is_knowledge_search]
-        had_retrieval = any(tc.retrieved_docs for tc in searches)
+        searches = [tc for tc in turn.tool_calls if tc.is_knowledge_activity]
+        had_retrieval = any(tc.retrieved_docs or (tc.result_count or 0) > 0 for tc in searches)
         honest = bool(_HONEST_GAP_RE.search(final))
 
         if honest or cited >= 1:
@@ -1477,9 +1493,7 @@ def assess_answer_groundedness(
 # ---------------------------------------------------------------------------
 
 
-def verify_quote_faithfulness(
-    convo: Conversation, knowledge: KnowledgeAnalysis | None = None
-) -> QuoteFaithfulness:
+def verify_quote_faithfulness(convo: Conversation, knowledge: KnowledgeAnalysis | None = None) -> QuoteFaithfulness:
     """Check direct quotes in bot answers against the transcript's tool outputs.
 
     Modern RAG reads full documents in a sandbox, so retrieved-doc text rarely
@@ -1492,7 +1506,7 @@ def verify_quote_faithfulness(
 
     quotes: list[QuoteCheck] = []
     for turn in convo.turns:
-        turn_docs = [d for tc in turn.tool_calls if tc.is_knowledge_search for d in tc.retrieved_docs]
+        turn_docs = [d for tc in turn.tool_calls if tc.is_knowledge_activity for d in tc.retrieved_docs]
         turn_title = turn_docs[0].title if turn_docs else None
         for m in turn.bot_messages:
             raw_spans = [mm.group(1).strip() for mm in _BLOCKQUOTE_RE.finditer(m.text)]
@@ -1533,7 +1547,11 @@ def verify_quote_faithfulness(
                     QuoteCheck(
                         turn_index=turn.index,
                         excerpt=display,
-                        ref_id=(turn_docs[0].reference_id if turn_docs and verdict == "attributed-source-in-sandbox" else None),
+                        ref_id=(
+                            turn_docs[0].reference_id
+                            if turn_docs and verdict == "attributed-source-in-sandbox"
+                            else None
+                        ),
                         source_title=title,
                         verdict=verdict,
                     )
@@ -1553,9 +1571,7 @@ def verify_quote_faithfulness(
 # ---------------------------------------------------------------------------
 
 
-def analyze_coverage_gaps(
-    convo: Conversation, knowledge: KnowledgeAnalysis | None = None
-) -> CoverageGapAnalysis:
+def analyze_coverage_gaps(convo: Conversation, knowledge: KnowledgeAnalysis | None = None) -> CoverageGapAnalysis:
     gaps: list[CoverageGap] = []
     for turn in convo.turns:
         if turn.user_message is None:
@@ -1711,8 +1727,24 @@ _WANTED_NOT_A_RE = re.compile(r"not (?:a|an)\s+[\"'`]?([\w-]+)[\"'`]?\s+skill", 
 _WANTED_FOR_RE = re.compile(r"(?:no )?skill (?:for|to)\s+([\w -]{3,40})", re.IGNORECASE)
 _WANTED_GENERIC_RE = re.compile(r"[\"'`]([\w-]+)[\"'`]\s+skill|([\w-]+)\s+skill", re.IGNORECASE)
 _WANTED_STOP = {
-    "relevant", "available", "suitable", "appropriate", "specific", "dedicated", "a", "an",
-    "the", "this", "that", "any", "such", "existing", "built-in", "native", "good", "right",
+    "relevant",
+    "available",
+    "suitable",
+    "appropriate",
+    "specific",
+    "dedicated",
+    "a",
+    "an",
+    "the",
+    "this",
+    "that",
+    "any",
+    "such",
+    "existing",
+    "built-in",
+    "native",
+    "good",
+    "right",
 }
 _FALLBACK_RE = re.compile(r"(python|directly|manually|raw code|by hand|write the code|using code)", re.IGNORECASE)
 
@@ -1766,7 +1798,7 @@ def analyze_retrieval_depth(
     if knowledge is None or not knowledge.queries:
         return None
 
-    idx = reference_index(convo)
+    idx = reference_index(convo, searches_only=True)
     cited_keys = set(knowledge.cited_reference_ids)
     cited_titles = {_normalize_title(d.title) for d in knowledge.distinct_docs} - {
         _normalize_title(d.title) for d in knowledge.uncited_docs
@@ -1888,7 +1920,9 @@ def analyze_search_strategy(convo: Conversation, knowledge: KnowledgeAnalysis | 
 
 # --- G1 · Generated file artifacts ------------------------------------------
 
-_ARTIFACT_PY_RE = re.compile(r"(python-pptx|python-docx|openpyxl|reportlab|matplotlib|\.save\(|Presentation\()", re.IGNORECASE)
+_ARTIFACT_PY_RE = re.compile(
+    r"(python-pptx|python-docx|openpyxl|reportlab|matplotlib|\.save\(|Presentation\()", re.IGNORECASE
+)
 
 
 def analyze_generated_artifacts(convo: Conversation) -> GeneratedArtifacts | None:
@@ -1898,7 +1932,11 @@ def analyze_generated_artifacts(convo: Conversation) -> GeneratedArtifacts | Non
     for turn in convo.turns:
         # Did this turn show code-authoring intent (python-pptx etc.)?
         think = " ".join(t.text for t in turn.thoughts if t.text)
-        skill_made = any("skill" in (tc.name or "").lower() for tc in turn.tool_calls if "creat" in (tc.display_name or "").lower() or "generat" in (tc.display_name or "").lower())
+        skill_made = any(
+            "skill" in (tc.name or "").lower()
+            for tc in turn.tool_calls
+            if "creat" in (tc.display_name or "").lower() or "generat" in (tc.display_name or "").lower()
+        )
         py_made = bool(_ARTIFACT_PY_RE.search(think)) or "python" in think.lower()
         for m in turn.bot_messages:
             for a in m.file_attachments:
@@ -1908,7 +1946,7 @@ def analyze_generated_artifacts(convo: Conversation) -> GeneratedArtifacts | Non
                 evidence = ""
                 if how == "python":
                     mm = _ARTIFACT_PY_RE.search(think)
-                    evidence = _truncate(think[max(0, mm.start() - 40):] if mm else think, 200)
+                    evidence = _truncate(think[max(0, mm.start() - 40) :] if mm else think, 200)
                 items.append(
                     GeneratedArtifact(
                         turn_index=turn.index,
@@ -1949,7 +1987,7 @@ def analyze_grounding_pipeline(
     # Snippet mode — are search "snippets" real content or download stubs?
     stub = content = 0
     for tc in convo.tool_calls:
-        if not tc.is_knowledge_search:
+        if not tc.is_knowledge_activity:
             continue
         for d in tc.retrieved_docs:
             snip = (d.snippet or "").strip()
@@ -2196,9 +2234,7 @@ def collect_findings(report: AnalysisReport) -> list[Finding]:
 
     tf = report.tool_failures
     if tf and tf.total_failures:
-        embedded_note = (
-            f" ({tf.embedded_failures} hidden behind a 'completed' status)" if tf.embedded_failures else ""
-        )
+        embedded_note = f" ({tf.embedded_failures} hidden behind a 'completed' status)" if tf.embedded_failures else ""
         out.append(
             Finding(
                 severity="warning" if tf.gave_up == 0 else "critical",
@@ -2286,8 +2322,7 @@ def collect_findings(report: AnalysisReport) -> list[Finding]:
             Finding(
                 severity="warning" if unrec else "info",
                 category="Sandbox",
-                title=f"{ci.friction_count} sandbox friction episode(s)"
-                + (" (all recovered)" if not unrec else ""),
+                title=f"{ci.friction_count} sandbox friction episode(s)" + (" (all recovered)" if not unrec else ""),
                 detail=ci.friction[0].excerpt,
             )
         )
@@ -2352,7 +2387,8 @@ def collect_findings(report: AnalysisReport) -> list[Finding]:
                     title=f"Unverifiable grounding in {len(dangling_turns)} turn(s)",
                     detail="Answer(s) cite a [n] marker whose source was never returned by any knowledge "
                     "search, so the claim cannot be traced to a document — turn "
-                    + ", ".join(str(t) for t in dangling_turns) + ".",
+                    + ", ".join(str(t) for t in dangling_turns)
+                    + ".",
                 )
             )
 

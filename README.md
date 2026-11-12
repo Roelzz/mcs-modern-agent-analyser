@@ -48,6 +48,9 @@ Either one alone produces a partial report; **both together** unlock the
 cross-referenced analysis (instruction compliance, defined-but-unused knowledge
 sources, tools used but never declared).
 
+Conversation transcripts can also be loaded directly from Dataverse with
+delegated OAuth device-code authentication.
+
 > Sibling of the classic `Agent_analyser`. Because modern agents have a different
 > shape *and* a different transcript format, this is a purpose-built tool rather than
 > a fork.
@@ -85,8 +88,9 @@ uv run reflex run
 ```
 
 Open <http://localhost:3000>, then either **drag in** a transcript JSON / agent YAML
-or click one of the bundled samples (Knowledge agent · Autonomous agent · Code
-interpreter · Generated deck).
+or use the **Dataverse** tab to fetch a transcript. You can also click one of the
+bundled samples (Knowledge agent · Autonomous agent · Code interpreter · Generated
+deck).
 
 Prefer the terminal?
 
@@ -107,6 +111,14 @@ Knowledge / Tools lanes.
 
 ![Conversation tab — user/agent chat bubbles with citations and Markdown](docs/screenshots/chat.png)
 
+### Dataverse — load transcripts without manual export
+
+Paste Copilot Studio Session details, sign in with the Microsoft device-code flow,
+and fetch conversation metadata directly from Dataverse. Transcript bodies load only
+when selected for analysis.
+
+![Dataverse connection — session-details auto-fill and device-code authentication](docs/screenshots/dataverse-connection.png)
+
 ### Components — the agent, hierarchically
 
 The question that started this feature: *"an MCP server is added to the agent but it
@@ -118,10 +130,12 @@ explains itself with a Microsoft Learn reference.
 
 ### Knowledge — search, retrieval depth & grounding pipeline
 
-See which searches were productive, how many retrieved docs were actually cited
-(over-retrieval), the SharePoint folder taxonomy, and a per-document grounding chain
-that spells out the document-level vs passage-level caveat.
+For long conversations, filter knowledge-active turns and inspect one user question at
+a time. Each turn preserves the exact search, document retrieval, ranked snippets, and
+source links; conversation-level strategy, retrieval-depth, and grounding analysis
+remain below the explorer.
 
+![Knowledge tab — turn-based search, document, and ranked-snippet explorer](docs/screenshots/knowledge-conversation-explorer.png)
 ![Knowledge tab — search strategy and retrieval depth](docs/screenshots/knowledge.png)
 ![Knowledge tab — per-document grounding pipeline with caveats](docs/screenshots/grounding.png)
 
@@ -135,9 +149,11 @@ The reasoning timeline plus a breakdown of what the code interpreter was *for*:
 
 ### Tools & Actions — usage, hidden failures & generated outputs
 
-Per-tool call/complete/fail counts (including failures hidden behind a `completed`
-status), tool-call efficiency, and the files the agent generated.
+Filter tool-active turns by question, tool name, query, or status, then inspect full
+parameters, responses, failures, and diagnosis in execution order. Aggregate usage,
+efficiency, recovery, and generated outputs remain below the explorer.
 
+![Tools tab — turn-based search, action, and skill explorer](docs/screenshots/tools-conversation-explorer.png)
 ![Tools tab — tool usage table and generated outputs](docs/screenshots/tools.png)
 
 ### Timeline — ordered events per turn
@@ -159,9 +175,9 @@ transcripts carry no timestamps, so this is *ordering*, not timing.
 | --- | --- |
 | **Overview** | Headline + derived metrics (turns, tool calls, searches, thoughts, failed/zero-result, calls-per-answer, searches→first-answer) and the severity-filtered Findings list. |
 | **Agent** | Model, template, recognizer, instructions, memory, auth mode/trigger, access control, knowledge sources, environment variables. |
-| **Conversation** | Sequence diagram + chat-style transcript with Markdown, reasoning, citations, transcript search and a raw-JSON toggle. |
-| **Tools & Actions** | Per-tool usage, hidden-failure detection, generated outputs, tool-call efficiency (redundant calls). |
-| **Knowledge** | Search strategy & citation precision, retrieval depth & over-retrieval, SharePoint taxonomy, per-document grounding pipeline. |
+| **Conversation** | Sequence diagram + chat-style transcript with Markdown, reasoning, citations, transcript search, and raw JSON download from the report header. |
+| **Tools & Actions** | Turn-based tool-call explorer, full parameters/results/errors, per-tool usage, hidden-failure detection, generated outputs, and efficiency. |
+| **Knowledge** | Turn-based conversation explorer, per-turn knowledge tools and ranked snippets, search strategy, retrieval depth, SharePoint taxonomy, and grounding pipeline. |
 | **Reasoning** | Chain-of-thought timeline, sandbox/code-interpreter purpose split, skill-gap → code fallbacks, friction & recovery. |
 | **Quality** | Groundedness, ungrounded answers, dangling & unverifiable citations, repetition, premise corrections, honest knowledge gaps. |
 | **Timeline** | Ordered per-turn event stream (no timestamps in modern transcripts). |
@@ -197,6 +213,39 @@ flowchart LR
 - **Transcript JSON** — modern flat array of `{ role, id, text, toolCalls[], thoughts[] }`.
 
 Either alone produces a partial report; both together enable the full cross-reference.
+
+### Dataverse connection
+
+The **Dataverse** input tab fetches `ConversationTranscript` rows without requiring
+a transcript download from the Copilot Studio Preview pane.
+
+1. In Copilot Studio, enable conversation transcripts for the agent.
+2. Open **Settings → Session details** and copy the Tenant ID, Instance URL, and
+   Copilot ID.
+3. Paste that block into the Dataverse tab and select **Auto-fill**.
+4. Select **Connect to Dataverse**, open the Microsoft device-login page, and enter
+   the displayed code.
+5. Fetch recent transcripts or enter a known ConversationTranscript row ID, then
+   select **Analyse**.
+
+The signed-in user needs Dataverse access and Read permission on the
+`ConversationTranscript` table. Transcripts can take roughly 30 minutes to appear
+after a conversation ends. The default Microsoft Azure CLI client ID works for most
+tenants; tenants that block it through Conditional Access can provide their own
+public-client application ID with delegated Dynamics CRM access.
+
+Using the Copilot ID GUID from Session details queries transcripts directly and
+does not require access to the `Bot` table. Supplying a Dataverse bot schema name
+instead requires Read permission on `Bot` so the app can resolve it to a GUID.
+
+Access tokens and fetched transcript bodies are held only in backend Reflex state
+(memory by default, or Redis when configured) and are cleared on disconnect or
+**New**; they are never stored in browser local storage. The environment URL is
+restricted to known Dataverse hostname suffixes; sovereign-cloud suffixes can be
+added with `DATAVERSE_ALLOWED_HOST_SUFFIXES`.
+The non-secret Environment URL, Tenant ID, Client ID, and Copilot ID are remembered
+in the current browser's local storage so they do not need to be re-entered. Use
+**Forget** in the Dataverse tab to clear them.
 
 ### 📤 Getting these files out of Copilot Studio
 

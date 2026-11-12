@@ -1,10 +1,11 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from agent_parser import parse_agent_yaml
 from analysis import analyze
-from transcript_parser import parse_transcript
+from transcript_parser import parse_transcript, parse_transcript_text
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -98,6 +99,107 @@ def test_graceful_degradation_transcript_only():
     assert report.agent is None
     assert report.overview is not None
     assert any(f.title == "No agent YAML provided" for f in report.findings)
+
+
+def test_followup_retrievals_do_not_inflate_search_metrics_or_credits():
+    convo = parse_transcript_text(
+        json.dumps(
+            [
+                {"role": "user", "text": "Find and open the policy"},
+                {
+                    "role": "bot",
+                    "text": "Here is the policy [1].",
+                    "toolCalls": [
+                        {
+                            "id": "search",
+                            "name": "sharepoint_semantic_search",
+                            "category": "KnowledgeSearch",
+                            "status": "completed",
+                            "params": {"query": "policy"},
+                            "result": json.dumps(
+                                {
+                                    "mode": "semantic",
+                                    "count": 1,
+                                    "results": [{"referenceId": "turn1doc1", "title": "Policy.docx"}],
+                                }
+                            ),
+                        },
+                        {
+                            "id": "doc",
+                            "name": "SharePoint_get_doc",
+                            "category": "KnowledgeRetrieve",
+                            "status": "completed",
+                            "params": {"referenceId": "turn1doc1"},
+                            "result": json.dumps(
+                                {
+                                    "referenceId": "turn1doc1",
+                                    "title": "Policy.docx",
+                                    "content": "Policy content.",
+                                }
+                            ),
+                        },
+                        {
+                            "id": "snippets",
+                            "name": "sharepoint_get_snippets",
+                            "category": "KnowledgeRetrieve",
+                            "status": "completed",
+                            "params": {"referenceId": "turn1doc1"},
+                            "result": json.dumps(
+                                {
+                                    "mode": "snippets",
+                                    "referenceId": "turn1doc1",
+                                    "returned": 1,
+                                    "snippets": [{"rank": 1, "text": "Policy content."}],
+                                }
+                            ),
+                        },
+                    ],
+                },
+            ]
+        )
+    )
+
+    report = analyze(None, convo)
+    assert report.overview is not None
+    assert report.overview.knowledge_search_count == 1
+    assert report.knowledge is not None
+    assert len(report.knowledge.queries) == 3
+    assert report.credit_estimate is not None
+    generative = [item for item in report.credit_estimate.line_items if item.kind == "generative_answer"]
+    assert len(generative) == 1
+    assert report.retrieval_depth is not None
+    assert report.retrieval_depth.total_retrieved == 1
+    assert report.retrieval_depth.overlap_docs == 0
+
+
+def test_positive_count_without_document_metadata_is_not_zero_result():
+    convo = parse_transcript_text(
+        json.dumps(
+            [
+                {"role": "user", "text": "Find the policy"},
+                {
+                    "role": "bot",
+                    "text": "The policy requires approval before execution.",
+                    "toolCalls": [
+                        {
+                            "id": "search",
+                            "name": "sharepoint_semantic_search",
+                            "category": "KnowledgeSearch",
+                            "status": "completed",
+                            "params": {"query": "policy approval"},
+                            "result": json.dumps({"count": 2}),
+                        }
+                    ],
+                },
+            ]
+        )
+    )
+
+    report = analyze(None, convo)
+    assert report.overview is not None
+    assert report.overview.zero_result_search_count == 0
+    assert report.groundedness is not None
+    assert report.groundedness.hallucination_risk == []
 
 
 def test_graceful_degradation_yaml_only():

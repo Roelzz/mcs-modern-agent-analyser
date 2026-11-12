@@ -5,6 +5,7 @@ builders, so keep them pure (string in, string out)."""
 from __future__ import annotations
 
 import html
+import json
 
 from models import AnalysisReport, Conversation
 
@@ -45,8 +46,8 @@ def _seq(text: str, limit: int = 70) -> str:
 def render_sequence_diagram(convo: Conversation, agent_name: str = "Agent") -> str:
     if not convo.turns:
         return ""
-    has_search = any(tc.is_knowledge_search for tc in convo.tool_calls)
-    other_tools = any(not tc.is_knowledge_search for tc in convo.tool_calls)
+    has_search = any(tc.is_knowledge_activity for tc in convo.tool_calls)
+    other_tools = any(not tc.is_knowledge_activity for tc in convo.tool_calls)
 
     lines = ["```mermaid", "sequenceDiagram", "    participant U as User", "    participant A as Agent"]
     if has_search:
@@ -61,8 +62,9 @@ def render_sequence_diagram(convo: Conversation, agent_name: str = "Agent") -> s
             lines.append("    Note over A: session start")
 
         for tc in turn.tool_calls:
-            if tc.is_knowledge_search:
-                lines.append(f"    A->>K: search {_seq(tc.query or '', 50)}")
+            if tc.is_knowledge_activity:
+                action = "search" if tc.is_knowledge_search else "retrieve"
+                lines.append(f"    A->>K: {action} {_seq(tc.query or tc.name or '', 50)}")
                 if tc.zero_result:
                     lines.append("    K--xA: no results")
                 else:
@@ -180,9 +182,25 @@ def render_knowledge(report: AnalysisReport) -> str:
     k = report.knowledge
     if k is None or not k.queries:
         return ""
-    out = ["## Knowledge", "", "**Searches**", "", "| Query | Results | Zero-result |", "| --- | --- | --- |"]
+    out = [
+        "## Knowledge",
+        "",
+        "**Knowledge activity**",
+        "",
+        "| Type | Tool | Query / reference | Results | Zero-result |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for q in k.queries:
-        out.append(f"| {_cell(q.query)} | {q.result_count} | {'⚠️ yes' if q.zero_result else 'no'} |")
+        if q.is_search:
+            activity_type = "Search"
+        elif q.result_mode == "snippets":
+            activity_type = "Ranked snippets"
+        else:
+            activity_type = "Document retrieval"
+        out.append(
+            f"| {activity_type} | {_cell(q.tool_name)} | {_cell(q.query)} | "
+            f"{q.result_count} | {'⚠️ yes' if q.zero_result else 'no'} |"
+        )
 
     if k.distinct_docs:
         out += ["", "**Documents retrieved**", "", "| Title | Reference | Used in answer |", "| --- | --- | --- |"]
@@ -331,9 +349,7 @@ def render_credits(report: AnalysisReport) -> str:
         out.append(f"> Reasoning model — premium token meter applies (≈{est.total_tokens} tokens estimated).")
         out.append("")
     if est.by_kind:
-        out.append(
-            "- " + "  |  ".join(f"**{k.replace('_', ' ')}:** {v:g}" for k, v in sorted(est.by_kind.items()))
-        )
+        out.append("- " + "  |  ".join(f"**{k.replace('_', ' ')}:** {v:g}" for k, v in sorted(est.by_kind.items())))
         out.append("")
     out += ["| Step | Kind | Credits | Detail |", "| --- | --- | --- | --- |"]
     for it in est.line_items:
@@ -402,8 +418,7 @@ def render_retrieval_depth(report: AnalysisReport) -> str:
         f"- Retrieval mode: **{rd.retrieval_mode}**",
         f"- Unique documents: **{rd.unique_docs}** (from {rd.total_retrieved} retrievals; "
         f"{rd.overlap_docs} returned by more than one search)",
-        f"- Cited: **{rd.cited_docs}** of {rd.unique_docs} — over-retrieval "
-        f"{int(rd.over_retrieval_ratio * 100)}%",
+        f"- Cited: **{rd.cited_docs}** of {rd.unique_docs} — over-retrieval {int(rd.over_retrieval_ratio * 100)}%",
         f"- Full-document sandbox reads: **{rd.full_doc_reads}**",
         "",
     ]
@@ -413,7 +428,12 @@ def render_retrieval_depth(report: AnalysisReport) -> str:
             out.append(f"| {_cell(f.path)} | {f.count} |")
         out.append("")
     if rd.doc_retrievals:
-        out += ["**Most-retrieved documents:**", "", "| Document | Retrievals | Turns | Cited |", "| --- | --- | --- | --- |"]
+        out += [
+            "**Most-retrieved documents:**",
+            "",
+            "| Document | Retrievals | Turns | Cited |",
+            "| --- | --- | --- | --- |",
+        ]
         for d in rd.doc_retrievals:
             turns = ", ".join(str(t) for t in d.turns)
             out.append(f"| {_cell(d.title)} | {d.retrieval_count} | {_cell(turns)} | {'yes' if d.cited else 'no'} |")
@@ -482,7 +502,10 @@ def render_grounding_pipeline(report: AnalysisReport) -> str:
         out.append(f"> {_cell(n)}")
     if gp.notes:
         out.append("")
-    out += ["| Document | Searched | Downloaded | Preprocessed | Read | Cited |", "| --- | --- | --- | --- | --- | --- |"]
+    out += [
+        "| Document | Searched | Downloaded | Preprocessed | Read | Cited |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for d in gp.docs:
         out.append(
             f"| {_cell(d.title)} | {_yn(d.searched)} | {_yn(d.downloaded)} | {_yn(d.preprocessed)} | "
@@ -513,13 +536,17 @@ def render_components(report: AnalysisReport, convo: Conversation | None = None)
         if p.instructions:
             agent_rows.append(("Instructions", f"{len(p.instruction_segments) or 1} segment(s)", "instructions", None))
         if p.authentication_mode:
-            agent_rows.append(("Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode))
+            agent_rows.append(
+                ("Authentication mode", p.authentication_mode, "authenticationMode", p.authentication_mode)
+            )
         if p.authentication_trigger:
             agent_rows.append(
                 ("Authentication trigger", p.authentication_trigger, "authenticationTrigger", p.authentication_trigger)
             )
         if p.access_control_policy:
-            agent_rows.append(("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy))
+            agent_rows.append(
+                ("Access control", p.access_control_policy, "accessControlPolicy", p.access_control_policy)
+            )
         agent_rows.append(("Memory", "Enabled" if p.enable_memory else "Disabled", "enableMemory", None))
         if p.conversation_starters:
             agent_rows.append(
@@ -604,12 +631,22 @@ def render_chat(convo: Conversation | None) -> str:
             if th.text.strip():
                 out.append(f"> 💭 _{_cell(th.text)}_")
         for tc in m.tool_calls:
-            if tc.is_knowledge_search:
+            if tc.is_knowledge_activity:
                 n = tc.result_count if tc.result_count is not None else len(tc.retrieved_docs)
                 detail = "no results" if tc.zero_result else f"{n} result(s)"
-                out.append(f"> 🔎 **KnowledgeSearch** `{_cell(tc.query)}` → {detail}")
+                if tc.result_mode == "snippets":
+                    label = "RankedSnippetRetrieval"
+                elif tc.result_mode == "document" or tc.is_knowledge_retrieval:
+                    label = "DocumentRetrieval"
+                else:
+                    label = "KnowledgeSearch"
+                out.append(f"> 🔎 **{label}** `{_cell(tc.query or tc.name)}` → {detail}")
                 for d in tc.retrieved_docs:
                     out.append(f">   - {_cell(d.title)} (`{_cell(d.reference_id)}`)")
+                    for snippet in d.snippets:
+                        rank = f"Rank {snippet.rank}" if snippet.rank is not None else "Unranked"
+                        page = f", page {snippet.page_number}" if snippet.page_number is not None else ""
+                        out.append(f">     - **{rank}{page}:** {_cell(snippet.text)}")
             else:
                 flag = "❌" if tc.failed else "✅"
                 out.append(f"> 🔧 **{_cell(tc.name)}** {flag} {_cell(tc.display_name)}")
@@ -739,7 +776,12 @@ def render_quote_traceability(report: AnalysisReport) -> str:
     qf = report.quote_faithfulness
     if qf is None or not qf.quotes:
         return ""
-    rank = {"unattributed-quote": 0, "dangling-attribution": 1, "attributed-source-in-sandbox": 2, "verified-in-tool-output": 3}
+    rank = {
+        "unattributed-quote": 0,
+        "dangling-attribution": 1,
+        "attributed-source-in-sandbox": 2,
+        "verified-in-tool-output": 3,
+    }
     label = {
         "verified-in-tool-output": "✅ verified in tool output",
         "attributed-source-in-sandbox": "🔵 attributed — source in sandbox",
@@ -893,7 +935,7 @@ def build_sections(report: AnalysisReport, convo: Conversation | None = None) ->
 def build_standalone_html(markdown: str, title: str) -> str:
     """Self-contained HTML export rendered client-side via CDN marked.js +
     mermaid.js. No server, no Python deps — just a portable file."""
-    escaped = markdown.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    markdown_json = json.dumps(markdown, ensure_ascii=False).replace("</", "<\\/")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -901,6 +943,7 @@ def build_standalone_html(markdown: str, title: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{html.escape(title)}</title>
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.7; font-size: 15px; max-width: 980px; margin: 0 auto; padding: 32px 24px; color: #18181b; background: #fff; }}
@@ -923,15 +966,25 @@ def build_standalone_html(markdown: str, title: str) -> str:
 <div id="content"></div>
 <script>
 (function() {{
-  const md = `{escaped}`;
+  const md = {markdown_json};
+  const escapeHtml = (value) => String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
   const renderer = new marked.Renderer();
   const origCode = renderer.code.bind(renderer);
   renderer.code = function(token) {{
-    if (token.lang === 'mermaid') {{ return '<pre class="mermaid">' + token.text + '</pre>'; }}
+    if (token.lang === 'mermaid') {{ return '<pre class="mermaid">' + escapeHtml(token.text) + '</pre>'; }}
     return origCode(token);
   }};
-  document.getElementById('content').innerHTML = marked.parse(md, {{ renderer: renderer }});
-  mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
+  renderer.html = function(token) {{
+    return escapeHtml(token.text || token.raw || '');
+  }};
+  const rendered = marked.parse(md, {{ renderer: renderer }});
+  document.getElementById('content').innerHTML = DOMPurify.sanitize(rendered);
+  mermaid.initialize({{ startOnLoad: true, theme: 'default', securityLevel: 'strict' }});
   mermaid.run();
 }})();
 </script>

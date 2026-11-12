@@ -146,6 +146,41 @@ def findings_block() -> rx.Component:
 # ---------------------------------------------------------------------------
 # Documents + citations
 # ---------------------------------------------------------------------------
+def snippet_item(snippet) -> rx.Component:
+    return rx.hstack(
+        rx.badge(
+            rx.cond(snippet.rank > 0, "Rank " + snippet.rank.to_string(), "Rank —"),
+            color_scheme="blue",
+            variant="soft",
+            size="1",
+            flex_shrink="0",
+        ),
+        rx.cond(
+            snippet.page_label != "",
+            rx.badge(snippet.page_label, color_scheme="gray", variant="soft", size="1", flex_shrink="0"),
+            rx.fragment(),
+        ),
+        rx.text(
+            snippet.text,
+            size="1",
+            color_scheme="gray",
+            white_space="pre-wrap",
+            line_height="1.45",
+            flex="1",
+            min_width="0",
+            overflow_wrap="anywhere",
+            max_height="92px",
+            overflow_y="auto",
+        ),
+        align="start",
+        spacing="2",
+        width="100%",
+        padding="7px 9px",
+        background="var(--blue-a2)",
+        border_radius="6px",
+    )
+
+
 def doc_item(d) -> rx.Component:
     highlighted = (State.active_citation != "") & (d.reference_id == State.active_citation)
     return rx.box(
@@ -167,6 +202,36 @@ def doc_item(d) -> rx.Component:
             spacing="2",
             align="center",
             width="100%",
+            min_width="0",
+        ),
+        rx.cond(
+            d.snippets.length() > 0,
+            rx.vstack(
+                rx.hstack(
+                    rx.hstack(
+                        rx.icon("list-ordered", size=14, color="var(--purple-9)"),
+                        rx.text("Ranked Snippets", size="1", weight="bold"),
+                        spacing="2",
+                        align="center",
+                    ),
+                    rx.spacer(),
+                    rx.badge(
+                        d.snippets.length().to_string() + " passages",
+                        color_scheme="purple",
+                        variant="soft",
+                        size="1",
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                rx.foreach(d.snippets, snippet_item),
+                spacing="1",
+                width="100%",
+                margin_top="8px",
+                max_height="420px",
+                overflow_y="auto",
+            ),
+            rx.fragment(),
         ),
         padding="8px 12px",
         border=rx.cond(highlighted, "2px solid var(--grass-9)", "1px solid var(--gray-a5)"),
@@ -255,21 +320,27 @@ def _action_body(tc) -> rx.Component:
         ),
         rx.cond(
             tc.content_html != "",
-            rx.box(
-                rx.html(tc.content_html),
-                padding="12px 14px",
-                border="1px dashed var(--grass-a7)",
-                border_radius="8px",
-                background="var(--grass-a2)",
+            rx.vstack(
+                rx.text("HTML Body (Escaped)", size="1", weight="bold", color_scheme="gray"),
+                rx.code_block(
+                    tc.content_html,
+                    language="markup",
+                    show_line_numbers=False,
+                    can_copy=True,
+                    wrap_long_lines=True,
+                    width="100%",
+                    max_height="260px",
+                ),
+                spacing="1",
                 width="100%",
-                max_height="260px",
-                overflow_y="auto",
             ),
             rx.fragment(),
         ),
         rx.cond(
             tc.content_text != "",
-            rx.box(rx.text(tc.content_text, size="1"), padding="10px", background="var(--gray-a2)", border_radius="8px"),
+            rx.box(
+                rx.text(tc.content_text, size="1"), padding="10px", background="var(--gray-a2)", border_radius="8px"
+            ),
             rx.fragment(),
         ),
         spacing="2",
@@ -427,12 +498,7 @@ def _tool_call_detail(tc) -> rx.Component:
     row. Renders call id + nested drop-downs: What happened / Request params / Response
     body / Error / Diagnosis — all full, nothing truncated, no per-tool special-casing.
     Ungated (the caller decides when to show it)."""
-    has_resp = (
-        (tc.raw_result != "")
-        | (tc.docs.length() > 0)
-        | (tc.content_html != "")
-        | (tc.content_text != "")
-    )
+    has_resp = (tc.raw_result != "") | (tc.docs.length() > 0) | (tc.content_html != "") | (tc.content_text != "")
     return rx.vstack(
         rx.cond(
             tc.call_id != "",
@@ -573,9 +639,15 @@ def _thoughts_block(b) -> rx.Component:
     return rx.cond(
         State.show_thoughts & (b.thoughts.length() > 0),
         rx.box(
-            rx.hstack(rx.icon("brain", size=13, color="var(--purple-9)"), rx.text("Reasoning", size="1", weight="medium", color_scheme="purple"), spacing="1"),
+            rx.hstack(
+                rx.icon("brain", size=13, color="var(--purple-9)"),
+                rx.text("Reasoning", size="1", weight="medium", color_scheme="purple"),
+                spacing="1",
+            ),
             rx.vstack(
-                rx.foreach(b.thoughts, lambda t: rx.text(t, size="1", color_scheme="gray", style={"font_style": "italic"})),
+                rx.foreach(
+                    b.thoughts, lambda t: rx.text(t, size="1", color_scheme="gray", style={"font_style": "italic"})
+                ),
                 spacing="1",
                 width="100%",
                 margin_top="4px",
@@ -595,7 +667,9 @@ def chat_bubble(b) -> rx.Component:
     return rx.box(
         rx.hstack(
             rx.icon(rx.cond(user, "user", "bot"), size=15, color=rx.cond(user, "var(--blue-9)", "var(--grass-9)")),
-            rx.text(rx.cond(user, "User", "Agent"), size="1", weight="bold", color_scheme=rx.cond(user, "blue", "grass")),
+            rx.text(
+                rx.cond(user, "User", "Agent"), size="1", weight="bold", color_scheme=rx.cond(user, "blue", "grass")
+            ),
             rx.spacer(),
             rx.text(f"#{b.idx}", size="1", color_scheme="gray"),
             spacing="2",
@@ -604,7 +678,7 @@ def chat_bubble(b) -> rx.Component:
         ),
         rx.cond(
             b.text != "",
-            rx.markdown(b.text, size="2", margin_top="6px"),
+            rx.markdown(b.text, size="2", margin_top="6px", use_raw=False),
             rx.fragment(),
         ),
         rx.cond(user, rx.fragment(), _thoughts_block(b)),
@@ -657,22 +731,42 @@ def turn_card(t) -> rx.Component:
         rx.hstack(
             rx.cond(
                 t.searches.length() > 0,
-                rx.hstack(rx.icon("search", size=12, color="var(--blue-9)"), rx.text(f"{t.searches.length()} search", size="1", color_scheme="gray"), spacing="1", align="center"),
+                rx.hstack(
+                    rx.icon("search", size=12, color="var(--blue-9)"),
+                    rx.text(f"{t.searches.length()} search", size="1", color_scheme="gray"),
+                    spacing="1",
+                    align="center",
+                ),
                 rx.fragment(),
             ),
             rx.cond(
                 t.actions.length() > 0,
-                rx.hstack(rx.icon("send", size=12, color="var(--grass-9)"), rx.text(f"{t.actions.length()} action", size="1", color_scheme="gray"), spacing="1", align="center"),
+                rx.hstack(
+                    rx.icon("send", size=12, color="var(--grass-9)"),
+                    rx.text(f"{t.actions.length()} action", size="1", color_scheme="gray"),
+                    spacing="1",
+                    align="center",
+                ),
                 rx.fragment(),
             ),
             rx.cond(
                 t.doc_count > 0,
-                rx.hstack(rx.icon("file-text", size=12, color="var(--gray-9)"), rx.text(f"{t.doc_count} docs", size="1", color_scheme="gray"), spacing="1", align="center"),
+                rx.hstack(
+                    rx.icon("file-text", size=12, color="var(--gray-9)"),
+                    rx.text(f"{t.doc_count} docs", size="1", color_scheme="gray"),
+                    spacing="1",
+                    align="center",
+                ),
                 rx.fragment(),
             ),
             rx.cond(
                 t.citations.length() > 0,
-                rx.hstack(rx.icon("quote", size=12, color="var(--grass-9)"), rx.text(f"{t.citations.length()} cited", size="1", color_scheme="gray"), spacing="1", align="center"),
+                rx.hstack(
+                    rx.icon("quote", size=12, color="var(--grass-9)"),
+                    rx.text(f"{t.citations.length()} cited", size="1", color_scheme="gray"),
+                    spacing="1",
+                    align="center",
+                ),
                 rx.fragment(),
             ),
             spacing="3",
@@ -682,7 +776,18 @@ def turn_card(t) -> rx.Component:
         ),
         rx.cond(
             t.answer != "",
-            rx.text(t.answer, size="1", color_scheme="gray", margin_top="6px", style={"display": "-webkit-box", "-webkit-line-clamp": "2", "-webkit-box-orient": "vertical", "overflow": "hidden"}),
+            rx.text(
+                t.answer,
+                size="1",
+                color_scheme="gray",
+                margin_top="6px",
+                style={
+                    "display": "-webkit-box",
+                    "-webkit-line-clamp": "2",
+                    "-webkit-box-orient": "vertical",
+                    "overflow": "hidden",
+                },
+            ),
             rx.fragment(),
         ),
         padding="12px 14px",
@@ -765,7 +870,13 @@ def agent_panel() -> rx.Component:
                 rx.hstack(
                     section_title("Instructions", "scroll-text"),
                     rx.spacer(),
-                    rx.button(rx.icon("copy", size=14), "Copy", on_click=rx.set_clipboard(State.instructions), variant="soft", size="1"),
+                    rx.button(
+                        rx.icon("copy", size=14),
+                        "Copy",
+                        on_click=rx.set_clipboard(State.instructions),
+                        variant="soft",
+                        size="1",
+                    ),
                     width="100%",
                     align="center",
                 ),
@@ -784,7 +895,10 @@ def agent_panel() -> rx.Component:
                 card(
                     section_title("Conversation starters", "messages-square"),
                     rx.hstack(
-                        rx.foreach(State.conversation_starters, lambda s: rx.badge(s, variant="soft", color_scheme="grass", size="2")),
+                        rx.foreach(
+                            State.conversation_starters,
+                            lambda s: rx.badge(s, variant="soft", color_scheme="grass", size="2"),
+                        ),
                         spacing="2",
                         wrap="wrap",
                         margin_top="10px",
@@ -802,9 +916,17 @@ def agent_panel() -> rx.Component:
                             lambda k: rx.hstack(
                                 rx.icon("database", size=14, color="var(--gray-9)"),
                                 rx.text(k.name, size="2", weight="medium"),
-                                rx.cond(k.type != "", rx.badge(k.type, variant="soft", size="1", color_scheme="gray"), rx.fragment()),
+                                rx.cond(
+                                    k.type != "",
+                                    rx.badge(k.type, variant="soft", size="1", color_scheme="gray"),
+                                    rx.fragment(),
+                                ),
                                 rx.spacer(),
-                                rx.cond(k.unused, rx.badge("unused in convo", color_scheme="amber", variant="soft", size="1"), rx.fragment()),
+                                rx.cond(
+                                    k.unused,
+                                    rx.badge("unused in convo", color_scheme="amber", variant="soft", size="1"),
+                                    rx.fragment(),
+                                ),
                                 spacing="2",
                                 align="center",
                                 width="100%",
@@ -864,7 +986,13 @@ def conversation_panel() -> rx.Component:
                 ),
                 rx.cond(
                     State.transcript_query != "",
-                    rx.button(f"{State.chat_hits} hits", rx.icon("x", size=13), on_click=State.clear_transcript_query, variant="soft", size="2"),
+                    rx.button(
+                        f"{State.chat_hits} hits",
+                        rx.icon("x", size=13),
+                        on_click=State.clear_transcript_query,
+                        variant="soft",
+                        size="2",
+                    ),
                     rx.fragment(),
                 ),
                 rx.button(
@@ -908,10 +1036,18 @@ def _tool_table() -> rx.Component:
                 State.tool_rows,
                 lambda r: rx.table.row(
                     rx.table.cell(rx.text(r.name, weight="medium", size="2")),
-                    rx.table.cell(rx.badge(r.kind, color_scheme=_KIND_COLOR.get(r.kind, "gray"), variant="soft", size="1")),
+                    rx.table.cell(
+                        rx.badge(r.kind, color_scheme=_KIND_COLOR.get(r.kind, "gray"), variant="soft", size="1")
+                    ),
                     rx.table.cell(r.count),
                     rx.table.cell(r.completed),
-                    rx.table.cell(rx.cond(r.failed > 0, rx.text(r.failed, color_scheme="red", weight="bold"), rx.text("0", color_scheme="gray"))),
+                    rx.table.cell(
+                        rx.cond(
+                            r.failed > 0,
+                            rx.text(r.failed, color_scheme="red", weight="bold"),
+                            rx.text("0", color_scheme="gray"),
+                        )
+                    ),
                 ),
             )
         ),
@@ -924,29 +1060,266 @@ def _tool_table() -> rx.Component:
 def knowledge_query_card(q) -> rx.Component:
     return rx.box(
         rx.hstack(
-            rx.icon("search", size=14, color="var(--blue-9)"),
-            rx.code(q.query, size="1"),
+            rx.badge(q.sequence_label, color_scheme="gray", variant="soft", size="1"),
+            rx.badge(q.mode_label, color_scheme=q.mode_color, variant="soft", size="1"),
+            rx.code(q.tool_name, size="1"),
             rx.spacer(),
             rx.cond(
                 q.zero_result,
                 rx.badge("zero results", color_scheme="amber", size="1"),
-                rx.badge(f"{q.result_count} docs", color_scheme="blue", variant="soft", size="1"),
+                rx.badge(q.result_label, color_scheme=q.mode_color, variant="soft", size="1"),
             ),
             spacing="2",
             align="center",
             width="100%",
             wrap="wrap",
         ),
+        rx.hstack(
+            rx.icon("search", size=13, color="var(--gray-9)", flex_shrink="0"),
+            rx.text("Query", size="1", weight="bold", color_scheme="gray"),
+            rx.code(q.query, size="1", overflow_wrap="anywhere"),
+            spacing="2",
+            align="start",
+            width="100%",
+            margin_top="10px",
+        ),
         rx.cond(
             q.docs.length() > 0,
-            rx.vstack(rx.foreach(q.docs, doc_item), spacing="1", width="100%", margin_top="8px"),
+            rx.vstack(
+                rx.text("Tool Results", size="1", weight="bold", color_scheme="gray"),
+                rx.foreach(q.docs, doc_item),
+                spacing="1",
+                width="100%",
+                margin_top="12px",
+            ),
             rx.fragment(),
         ),
+        rx.link(
+            rx.hstack(
+                rx.icon("arrow-up", size=12),
+                rx.text("Back to Knowledge Navigation", size="1"),
+                spacing="1",
+                align="center",
+            ),
+            href="#knowledge-top",
+            color_scheme="gray",
+            text_decoration="none",
+            display="inline-flex",
+            margin_top="10px",
+        ),
+        id=q.anchor_id,
+        scroll_margin_top="128px",
         padding="12px 14px",
         border="1px solid var(--gray-a5)",
+        border_top=f"3px solid var(--{q.mode_color}-9)",
         border_radius="10px",
         background="var(--gray-a2)",
         width="100%",
+    )
+
+
+def knowledge_jump_link(label: str, icon: str, href: str, color: str = "gray") -> rx.Component:
+    return rx.link(
+        rx.hstack(
+            rx.icon(icon, size=13),
+            rx.text(label, size="1", weight="medium"),
+            spacing="1",
+            align="center",
+        ),
+        href=href,
+        color_scheme=color,
+        text_decoration="none",
+        padding="6px 9px",
+        border="1px solid var(--gray-a5)",
+        border_radius="8px",
+        background="var(--gray-a2)",
+        _hover={"background": "var(--gray-a3)", "border_color": "var(--gray-a7)"},
+    )
+
+
+def knowledge_page_navigation() -> rx.Component:
+    return card(
+        rx.hstack(
+            rx.icon("list-tree", size=16, color="var(--grass-9)"),
+            rx.text("Jump to", size="2", weight="bold"),
+            spacing="2",
+            align="center",
+        ),
+        rx.hstack(
+            rx.cond(
+                State.has_knowledge_turns,
+                knowledge_jump_link("Conversation Explorer", "messages-square", "#knowledge-conversation", "blue"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.has_search_strategy,
+                knowledge_jump_link("Search Strategy", "search-code", "#knowledge-search-strategy"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.has_retrieval_depth,
+                knowledge_jump_link("Retrieval Depth", "layers", "#knowledge-retrieval-depth"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.has_grounding_pipeline,
+                knowledge_jump_link("Grounding", "git-branch", "#knowledge-grounding"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.source_effectiveness.length() > 0,
+                knowledge_jump_link("Effectiveness", "target", "#knowledge-effectiveness"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                State.coverage_gaps.length() > 0,
+                knowledge_jump_link("Coverage Gaps", "search-x", "#knowledge-coverage"),
+                rx.fragment(),
+            ),
+            spacing="2",
+            wrap="wrap",
+            width="100%",
+            margin_top="10px",
+        ),
+        id="knowledge-top",
+        scroll_margin_top="128px",
+    )
+
+
+def conversation_turn_nav_item(turn, active_id, on_select) -> rx.Component:
+    selected = active_id == turn.id
+    return rx.button(
+        rx.vstack(
+            rx.hstack(
+                rx.badge(
+                    turn.turn_label,
+                    color_scheme=rx.cond(selected, "grass", "gray"),
+                    variant=rx.cond(selected, "solid", "soft"),
+                    size="1",
+                ),
+                rx.spacer(),
+                rx.text(
+                    turn.summary_label,
+                    size="1",
+                    color_scheme=rx.cond(selected, "grass", "gray"),
+                    font_variant_numeric="tabular-nums",
+                ),
+                width="100%",
+                align="center",
+                spacing="2",
+            ),
+            rx.text(
+                turn.question_excerpt,
+                size="1",
+                weight=rx.cond(selected, "medium", "regular"),
+                text_align="left",
+                white_space="normal",
+                overflow_wrap="anywhere",
+                width="100%",
+            ),
+            spacing="1",
+            align="start",
+            width="100%",
+            min_width="0",
+        ),
+        on_click=lambda: on_select(turn.id),
+        variant="ghost",
+        color_scheme=rx.cond(selected, "grass", "gray"),
+        background=rx.cond(selected, "var(--grass-a3)", "transparent"),
+        border=rx.cond(selected, "1px solid var(--grass-a6)", "1px solid transparent"),
+        border_left=rx.cond(selected, "3px solid var(--grass-9)", "3px solid transparent"),
+        width="100%",
+        height="auto",
+        min_height="64px",
+        padding="9px 10px",
+        justify_content="start",
+        white_space="normal",
+        _hover={"background": "var(--gray-a3)"},
+    )
+
+
+def conversation_turn_navigator(
+    turns,
+    active_id,
+    on_select,
+    filter_value,
+    on_filter_change,
+    on_clear_filter,
+    title: str,
+    empty_label: str,
+) -> rx.Component:
+    return card(
+        rx.hstack(
+            rx.hstack(
+                rx.icon("messages-square", size=16, color="var(--grass-9)"),
+                rx.text(title, size="2", weight="bold"),
+                spacing="2",
+                align="center",
+            ),
+            rx.spacer(),
+            rx.badge(
+                turns.length().to_string() + " turns",
+                color_scheme="gray",
+                variant="soft",
+                size="1",
+            ),
+            width="100%",
+            align="center",
+        ),
+        rx.hstack(
+            rx.input(
+                placeholder="Filter turns…",
+                value=filter_value,
+                on_change=on_filter_change,
+                aria_label="Filter conversation turns",
+                name="conversation-turn-filter",
+                custom_attrs={"autoComplete": "off"},
+                width="100%",
+                size="2",
+            ),
+            rx.cond(
+                filter_value != "",
+                rx.button(
+                    "Clear",
+                    on_click=on_clear_filter,
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="1",
+                ),
+                rx.fragment(),
+            ),
+            width="100%",
+            spacing="2",
+            margin_top="10px",
+        ),
+        rx.cond(
+            turns.length() > 0,
+            rx.vstack(
+                rx.foreach(
+                    turns,
+                    lambda turn: conversation_turn_nav_item(turn, active_id, on_select),
+                ),
+                spacing="1",
+                width="100%",
+                margin_top="10px",
+                max_height="58vh",
+                overflow_y="auto",
+                overscroll_behavior="contain",
+            ),
+            rx.text(
+                empty_label,
+                size="1",
+                color_scheme="gray",
+                margin_top="12px",
+            ),
+        ),
+        padding="14px",
+        flex="0 1 290px",
+        width="auto",
+        min_width="240px",
+        position="sticky",
+        top="126px",
+        align_self="flex-start",
     )
 
 
@@ -956,7 +1329,15 @@ def _chip_list(title: str, icon: str, items, color: str) -> rx.Component:
         card(
             section_title(title, icon),
             rx.vstack(
-                rx.foreach(items, lambda s: rx.hstack(rx.icon("dot", size=14, color=f"var(--{color}-9)"), rx.text(s, size="2"), spacing="1", align="center")),
+                rx.foreach(
+                    items,
+                    lambda s: rx.hstack(
+                        rx.icon("dot", size=14, color=f"var(--{color}-9)"),
+                        rx.text(s, size="2"),
+                        spacing="1",
+                        align="center",
+                    ),
+                ),
                 spacing="1",
                 width="100%",
                 margin_top="10px",
@@ -973,7 +1354,9 @@ def source_eff_row(s) -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     rx.text(s.name, size="2", weight="medium"),
-                    rx.cond(s.type != "", rx.badge(s.type, variant="soft", color_scheme="gray", size="1"), rx.fragment()),
+                    rx.cond(
+                        s.type != "", rx.badge(s.type, variant="soft", color_scheme="gray", size="1"), rx.fragment()
+                    ),
                     rx.cond(
                         ~s.configured,
                         rx.badge("runtime", variant="soft", color_scheme="blue", size="1"),
@@ -1033,6 +1416,8 @@ def knowledge_effectiveness_block() -> rx.Component:
                 width="100%",
                 margin_top="12px",
             ),
+            id="knowledge-effectiveness",
+            scroll_margin_top="128px",
         ),
         rx.fragment(),
     )
@@ -1054,7 +1439,9 @@ def tool_failure_row(f) -> rx.Component:
                 rx.badge(f.diagnosis_category, color_scheme="red", variant="soft", size="1"),
                 rx.fragment(),
             ),
-            rx.cond(f.embedded, rx.badge("hidden by status", variant="soft", color_scheme="amber", size="1"), rx.fragment()),
+            rx.cond(
+                f.embedded, rx.badge("hidden by status", variant="soft", color_scheme="amber", size="1"), rx.fragment()
+            ),
             rx.spacer(),
             rx.badge(f.recovery_label, variant="soft", color_scheme=f.color, size="1"),
             spacing="2",
@@ -1175,8 +1562,12 @@ def tool_failures_block() -> rx.Component:
             section_title("Failed tools & recovery", "circle-x"),
             rx.hstack(
                 stat_card("Failures", State.tf_total, "circle-x", "red"),
-                stat_card("Hidden by status", State.tf_embedded, "eye-off", rx.cond(State.tf_embedded > 0, "amber", "gray")),
-                stat_card("Recovered", State.tf_recovered, "circle-check", rx.cond(State.tf_recovered > 0, "grass", "gray")),
+                stat_card(
+                    "Hidden by status", State.tf_embedded, "eye-off", rx.cond(State.tf_embedded > 0, "amber", "gray")
+                ),
+                stat_card(
+                    "Recovered", State.tf_recovered, "circle-check", rx.cond(State.tf_recovered > 0, "grass", "gray")
+                ),
                 stat_card("Gave up", State.tf_gaveup, "ban", rx.cond(State.tf_gaveup > 0, "red", "gray")),
                 spacing="3",
                 width="100%",
@@ -1189,7 +1580,9 @@ def tool_failures_block() -> rx.Component:
                 color_scheme="gray",
                 margin_top="8px",
             ),
-            rx.vstack(rx.foreach(State.tool_failure_rows, tool_failure_row), spacing="2", width="100%", margin_top="12px"),
+            rx.vstack(
+                rx.foreach(State.tool_failure_rows, tool_failure_row), spacing="2", width="100%", margin_top="12px"
+            ),
         ),
         rx.fragment(),
     )
@@ -1207,7 +1600,11 @@ def duplicate_group_row(d) -> rx.Component:
             width="100%",
             wrap="wrap",
         ),
-        rx.cond(d.params_summary != "", rx.text(d.params_summary, size="1", color_scheme="gray", margin_top="4px"), rx.fragment()),
+        rx.cond(
+            d.params_summary != "",
+            rx.text(d.params_summary, size="1", color_scheme="gray", margin_top="4px"),
+            rx.fragment(),
+        ),
         padding="10px 14px",
         border="1px solid var(--gray-a5)",
         border_left="3px solid var(--amber-9)",
@@ -1234,8 +1631,18 @@ def efficiency_block() -> rx.Component:
             ),
             rx.cond(
                 State.duplicate_groups.length() > 0,
-                rx.vstack(rx.foreach(State.duplicate_groups, duplicate_group_row), spacing="2", width="100%", margin_top="12px"),
-                rx.text("No redundant tool calls — every call used distinct parameters.", size="2", color_scheme="gray", margin_top="10px"),
+                rx.vstack(
+                    rx.foreach(State.duplicate_groups, duplicate_group_row),
+                    spacing="2",
+                    width="100%",
+                    margin_top="12px",
+                ),
+                rx.text(
+                    "No redundant tool calls — every call used distinct parameters.",
+                    size="2",
+                    color_scheme="gray",
+                    margin_top="10px",
+                ),
             ),
         ),
         rx.fragment(),
@@ -1255,7 +1662,11 @@ def coverage_gap_row(g) -> rx.Component:
             wrap="wrap",
         ),
         rx.cond(g.user_question != "", rx.text(g.user_question, size="2", margin_top="6px"), rx.fragment()),
-        rx.cond(g.query != "", rx.text(g.query, size="1", font_family="monospace", color_scheme="gray", margin_top="4px"), rx.fragment()),
+        rx.cond(
+            g.query != "",
+            rx.text(g.query, size="1", font_family="monospace", color_scheme="gray", margin_top="4px"),
+            rx.fragment(),
+        ),
         padding="12px 14px",
         border="1px solid var(--gray-a5)",
         border_left=f"3px solid var(--{g.color}-9)",
@@ -1277,6 +1688,8 @@ def coverage_block() -> rx.Component:
                 margin_top="6px",
             ),
             rx.vstack(rx.foreach(State.coverage_gaps, coverage_gap_row), spacing="2", width="100%", margin_top="12px"),
+            id="knowledge-coverage",
+            scroll_margin_top="128px",
         ),
         rx.fragment(),
     )
@@ -1345,26 +1758,90 @@ def artifacts_block() -> rx.Component:
     )
 
 
-def all_tool_calls_block() -> rx.Component:
-    """The complete, generic per-call inspector for the Tools & actions tab: every tool
-    call (success + fail), each expandable to its full params + response + error +
-    diagnosis via the SAME `_tool_call_detail` renderer used in chat. Failed calls are
-    seeded open; Expand-all / Collapse-all toggle every call at once."""
+def tool_turn_detail() -> rx.Component:
     return rx.cond(
-        State.tool_calls_all.length() > 0,
+        State.filtered_tool_turns.length() > 0,
         card(
             rx.hstack(
-                section_title("All tool calls", "list"),
-                rx.badge(
-                    State.tool_calls_all.length().to_string() + " calls",
-                    color_scheme="gray",
-                    variant="soft",
-                    size="1",
+                rx.hstack(
+                    rx.badge(
+                        State.selected_tool_turn.turn_label,
+                        color_scheme="grass",
+                        variant="solid",
+                        size="2",
+                    ),
+                    rx.text(
+                        State.selected_tool_turn.summary_label,
+                        size="1",
+                        color_scheme="gray",
+                        font_variant_numeric="tabular-nums",
+                    ),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.spacer(),
+                rx.hstack(
+                    rx.button(
+                        rx.icon("chevron-left", size=13),
+                        "Previous",
+                        on_click=State.previous_tool_turn,
+                        disabled=~State.has_previous_tool_turn,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="1",
+                    ),
+                    rx.text(
+                        State.tool_turn_position,
+                        size="1",
+                        color_scheme="gray",
+                        font_variant_numeric="tabular-nums",
+                    ),
+                    rx.button(
+                        "Next",
+                        rx.icon("chevron-right", size=13),
+                        on_click=State.next_tool_turn,
+                        disabled=~State.has_next_tool_turn,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="1",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                width="100%",
+                align="center",
+                wrap="wrap",
+                spacing="2",
+            ),
+            rx.box(
+                rx.text("User Question", size="1", weight="bold", color_scheme="gray"),
+                rx.text(
+                    State.selected_tool_turn.question,
+                    size="3",
+                    weight="medium",
+                    text_wrap="pretty",
+                    overflow_wrap="anywhere",
+                    margin_top="4px",
+                ),
+                padding="12px 14px",
+                background="var(--grass-a2)",
+                border="1px solid var(--grass-a5)",
+                border_radius="10px",
+                margin_top="12px",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.hstack(
+                    rx.icon("wrench", size=15, color="var(--blue-9)"),
+                    rx.text("Tool Activity", size="2", weight="bold"),
+                    spacing="2",
+                    align="center",
                 ),
                 rx.spacer(),
                 rx.button(
                     rx.icon("chevrons-down-up", size=13),
-                    "Collapse all",
+                    "Collapse",
                     on_click=State.collapse_all_tools,
                     variant="soft",
                     color_scheme="gray",
@@ -1372,30 +1849,62 @@ def all_tool_calls_block() -> rx.Component:
                 ),
                 rx.button(
                     rx.icon("chevrons-up-down", size=13),
-                    "Expand all",
+                    "Expand",
                     on_click=State.expand_all_tools,
                     variant="soft",
                     color_scheme="grass",
                     size="1",
                 ),
-                align="center",
                 width="100%",
+                align="center",
                 wrap="wrap",
                 spacing="2",
+                margin_top="16px",
             ),
             rx.text(
-                "Every tool call in this conversation, with full request parameters and "
-                "complete responses. Failed calls open automatically.",
+                "Inspect the calls in this turn in execution order, including full parameters, responses, failures, and diagnosis.",
                 size="1",
                 color_scheme="gray",
-                margin_top="6px",
+                margin_top="4px",
             ),
             rx.vstack(
-                rx.foreach(State.tool_calls_all, tool_call_card),
+                rx.foreach(
+                    State.selected_tool_turn.tool_calls,
+                    lambda call, index: tool_call_card(call, index),
+                ),
                 spacing="2",
                 width="100%",
                 margin_top="12px",
             ),
+            flex="1 1 560px",
+            width="auto",
+            min_width="0",
+        ),
+        rx.fragment(),
+    )
+
+
+def tools_conversation_block() -> rx.Component:
+    return rx.cond(
+        State.has_tool_turns,
+        rx.hstack(
+            conversation_turn_navigator(
+                State.filtered_tool_turns,
+                State.active_tool_turn,
+                State.select_tool_turn,
+                State.tool_turn_query,
+                State.set_tool_turn_query,
+                State.clear_tool_turn_query,
+                "Tool Turns",
+                "No tool-active turns match this filter.",
+            ),
+            tool_turn_detail(),
+            id="tools-conversation",
+            scroll_margin_top="128px",
+            align="start",
+            spacing="4",
+            wrap="wrap",
+            width="100%",
         ),
         rx.fragment(),
     )
@@ -1405,8 +1914,8 @@ def tools_panel() -> rx.Component:
     return rx.cond(
         (State.tool_rows.length() > 0) | State.has_artifacts,
         rx.vstack(
+            tools_conversation_block(),
             card(section_title("Tool & action usage", "wrench"), rx.box(_tool_table(), margin_top="12px")),
-            all_tool_calls_block(),
             artifacts_block(),
             tool_failures_block(),
             efficiency_block(),
@@ -1415,14 +1924,6 @@ def tools_panel() -> rx.Component:
             _chip_list("Skill loads", "puzzle", State.skill_loads, "purple"),
             _chip_list("Retry signals", "rotate-ccw", State.retry_signals, "amber"),
             _chip_list("Tool failures", "circle-x", State.tool_failures, "red"),
-            rx.cond(
-                State.knowledge_queries.length() > 0,
-                card(
-                    section_title("Knowledge queries", "search"),
-                    rx.vstack(rx.foreach(State.knowledge_queries, knowledge_query_card), spacing="2", width="100%", margin_top="12px"),
-                ),
-                rx.fragment(),
-            ),
             spacing="4",
             width="100%",
         ),
@@ -1545,9 +2046,7 @@ def sandbox_block() -> rx.Component:
             rx.cond(
                 (State.sandbox_authoring_count > 0) | (State.sandbox_analysis_count > 0),
                 rx.box(
-                    rx.text(
-                        "What the code was for", size="1", weight="bold", color_scheme="gray", margin_top="14px"
-                    ),
+                    rx.text("What the code was for", size="1", weight="bold", color_scheme="gray", margin_top="14px"),
                     rx.hstack(
                         rx.box(
                             rx.hstack(
@@ -1671,7 +2170,15 @@ def reasoning_panel() -> rx.Component:
                             rx.box(
                                 rx.text(f"Message #{b.idx}", size="1", color_scheme="gray", weight="medium"),
                                 rx.vstack(
-                                    rx.foreach(b.thoughts, lambda t: rx.hstack(rx.icon("dot", size=14, color="var(--purple-9)"), rx.text(t, size="2"), spacing="1", align="start")),
+                                    rx.foreach(
+                                        b.thoughts,
+                                        lambda t: rx.hstack(
+                                            rx.icon("dot", size=14, color="var(--purple-9)"),
+                                            rx.text(t, size="2"),
+                                            spacing="1",
+                                            align="start",
+                                        ),
+                                    ),
                                     spacing="1",
                                     width="100%",
                                 ),
@@ -1704,7 +2211,11 @@ def check_row(c) -> rx.Component:
             rx.vstack(
                 rx.text(c.instruction, size="2", weight="medium"),
                 rx.text(c.check, size="1", color_scheme="gray"),
-                rx.cond(c.evidence != "", rx.text(c.evidence, size="1", color_scheme="gray", style={"font_style": "italic"}), rx.fragment()),
+                rx.cond(
+                    c.evidence != "",
+                    rx.text(c.evidence, size="1", color_scheme="gray", style={"font_style": "italic"}),
+                    rx.fragment(),
+                ),
                 spacing="1",
                 align="start",
             ),
@@ -1971,7 +2482,9 @@ def grounding_block() -> rx.Component:
                 color_scheme="gray",
                 margin_top="8px",
             ),
-            rx.vstack(rx.foreach(State.answer_grounding, answer_grounding_row), spacing="2", width="100%", margin_top="12px"),
+            rx.vstack(
+                rx.foreach(State.answer_grounding, answer_grounding_row), spacing="2", width="100%", margin_top="12px"
+            ),
         ),
         rx.fragment(),
     )
@@ -2048,10 +2561,19 @@ def quote_block() -> rx.Component:
         card(
             section_title("Quote traceability", "quote"),
             rx.hstack(
-                stat_card("Verified", State.qf_verified, "circle-check", rx.cond(State.qf_verified > 0, "grass", "gray")),
-                stat_card("In sandbox", State.qf_attributed, "file-check", rx.cond(State.qf_attributed > 0, "blue", "gray")),
+                stat_card(
+                    "Verified", State.qf_verified, "circle-check", rx.cond(State.qf_verified > 0, "grass", "gray")
+                ),
+                stat_card(
+                    "In sandbox", State.qf_attributed, "file-check", rx.cond(State.qf_attributed > 0, "blue", "gray")
+                ),
                 stat_card("Dangling", State.qf_dangling, "unlink", rx.cond(State.qf_dangling > 0, "red", "gray")),
-                stat_card("Unattributed", State.qf_unattributed, "triangle-alert", rx.cond(State.qf_unattributed > 0, "amber", "gray")),
+                stat_card(
+                    "Unattributed",
+                    State.qf_unattributed,
+                    "triangle-alert",
+                    rx.cond(State.qf_unattributed > 0, "amber", "gray"),
+                ),
                 spacing="3",
                 width="100%",
                 wrap="wrap",
@@ -2076,7 +2598,12 @@ def quality_panel() -> rx.Component:
             stat_card("Grounded", State.grounded, "circle-check", "grass"),
             stat_card("Ungrounded", State.ungrounded, "circle-alert", rx.cond(State.ungrounded > 0, "red", "gray")),
             stat_card("Citations", State.citation_markers, "quote", "blue"),
-            stat_card("Uncited answers", State.uncited_answer_count, "message-square-warning", rx.cond(State.uncited_answer_count > 0, "amber", "gray")),
+            stat_card(
+                "Uncited answers",
+                State.uncited_answer_count,
+                "message-square-warning",
+                rx.cond(State.uncited_answer_count > 0, "amber", "gray"),
+            ),
             spacing="3",
             width="100%",
             wrap="wrap",
@@ -2098,35 +2625,6 @@ def quality_panel() -> rx.Component:
         ),
         spacing="4",
         width="100%",
-    )
-
-
-def raw_inspector() -> rx.Component:
-    return rx.cond(
-        State.raw_transcript != "",
-        rx.vstack(
-            rx.button(
-                rx.icon("code", size=14),
-                rx.cond(State.raw_open, "Hide raw transcript", "Show raw transcript JSON"),
-                on_click=State.toggle_raw,
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-            ),
-            rx.cond(
-                State.raw_open,
-                rx.box(
-                    rx.code_block(State.raw_transcript, language="json", show_line_numbers=True, can_copy=True, wrap_long_lines=True),
-                    width="100%",
-                    max_height="420px",
-                    overflow="auto",
-                ),
-                rx.fragment(),
-            ),
-            spacing="2",
-            width="100%",
-        ),
-        rx.fragment(),
     )
 
 
@@ -2235,7 +2733,9 @@ def component_detail() -> rx.Component:
         rx.cond(
             c.doc != "",
             rx.link(
-                rx.hstack(rx.icon("external-link", size=13), rx.text("Microsoft Learn reference", size="1"), spacing="1"),
+                rx.hstack(
+                    rx.icon("external-link", size=13), rx.text("Microsoft Learn reference", size="1"), spacing="1"
+                ),
                 href=c.doc,
                 is_external=True,
                 margin_top="6px",
@@ -2435,7 +2935,9 @@ def search_strategy_block() -> rx.Component:
             rx.cond(
                 State.search_precision.length() > 0,
                 rx.vstack(
-                    rx.text("Search → citation precision", size="1", weight="bold", color_scheme="gray", margin_top="14px"),
+                    rx.text(
+                        "Search → citation precision", size="1", weight="bold", color_scheme="gray", margin_top="14px"
+                    ),
                     rx.foreach(State.search_precision, search_precision_row),
                     spacing="2",
                     width="100%",
@@ -2445,7 +2947,13 @@ def search_strategy_block() -> rx.Component:
             rx.cond(
                 State.recall_turns.length() > 0,
                 rx.vstack(
-                    rx.text("Answered from earlier retrieval", size="1", weight="bold", color_scheme="blue", margin_top="14px"),
+                    rx.text(
+                        "Answered from earlier retrieval",
+                        size="1",
+                        weight="bold",
+                        color_scheme="blue",
+                        margin_top="14px",
+                    ),
                     rx.foreach(
                         State.recall_turns,
                         lambda t: rx.hstack(
@@ -2464,6 +2972,8 @@ def search_strategy_block() -> rx.Component:
                 ),
                 rx.fragment(),
             ),
+            id="knowledge-search-strategy",
+            scroll_margin_top="128px",
         ),
         rx.fragment(),
     )
@@ -2510,7 +3020,13 @@ def retrieval_depth_block() -> rx.Component:
             rx.cond(
                 State.rd_folders.length() > 0,
                 rx.vstack(
-                    rx.text("Document taxonomy (SharePoint folders)", size="1", weight="bold", color_scheme="gray", margin_top="14px"),
+                    rx.text(
+                        "Document taxonomy (SharePoint folders)",
+                        size="1",
+                        weight="bold",
+                        color_scheme="gray",
+                        margin_top="14px",
+                    ),
                     rx.foreach(State.rd_folders, folder_row),
                     spacing="2",
                     width="100%",
@@ -2520,13 +3036,17 @@ def retrieval_depth_block() -> rx.Component:
             rx.cond(
                 State.rd_docs.length() > 0,
                 rx.vstack(
-                    rx.text("Most-retrieved documents", size="1", weight="bold", color_scheme="gray", margin_top="14px"),
+                    rx.text(
+                        "Most-retrieved documents", size="1", weight="bold", color_scheme="gray", margin_top="14px"
+                    ),
                     rx.foreach(State.rd_docs, doc_retrieval_row),
                     spacing="2",
                     width="100%",
                 ),
                 rx.fragment(),
             ),
+            id="knowledge-retrieval-depth",
+            scroll_margin_top="128px",
         ),
         rx.fragment(),
     )
@@ -2645,6 +3165,134 @@ def grounding_pipeline_block() -> rx.Component:
                 ),
                 rx.fragment(),
             ),
+            id="knowledge-grounding",
+            scroll_margin_top="128px",
+        ),
+        rx.fragment(),
+    )
+
+
+def knowledge_turn_detail() -> rx.Component:
+    return rx.cond(
+        State.filtered_knowledge_turns.length() > 0,
+        card(
+            rx.hstack(
+                rx.hstack(
+                    rx.badge(
+                        State.selected_knowledge_turn.turn_label,
+                        color_scheme="grass",
+                        variant="solid",
+                        size="2",
+                    ),
+                    rx.text(
+                        State.selected_knowledge_turn.summary_label,
+                        size="1",
+                        color_scheme="gray",
+                        font_variant_numeric="tabular-nums",
+                    ),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.spacer(),
+                rx.hstack(
+                    rx.button(
+                        rx.icon("chevron-left", size=13),
+                        "Previous",
+                        on_click=State.previous_knowledge_turn,
+                        disabled=~State.has_previous_knowledge_turn,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="1",
+                    ),
+                    rx.text(
+                        State.knowledge_turn_position,
+                        size="1",
+                        color_scheme="gray",
+                        font_variant_numeric="tabular-nums",
+                    ),
+                    rx.button(
+                        "Next",
+                        rx.icon("chevron-right", size=13),
+                        on_click=State.next_knowledge_turn,
+                        disabled=~State.has_next_knowledge_turn,
+                        variant="soft",
+                        color_scheme="gray",
+                        size="1",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                width="100%",
+                align="center",
+                wrap="wrap",
+                spacing="2",
+            ),
+            rx.box(
+                rx.text("User Question", size="1", weight="bold", color_scheme="gray"),
+                rx.text(
+                    State.selected_knowledge_turn.question,
+                    size="3",
+                    weight="medium",
+                    text_wrap="pretty",
+                    overflow_wrap="anywhere",
+                    margin_top="4px",
+                ),
+                padding="12px 14px",
+                background="var(--grass-a2)",
+                border="1px solid var(--grass-a5)",
+                border_radius="10px",
+                margin_top="12px",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.icon("database-zap", size=15, color="var(--blue-9)"),
+                rx.text("Knowledge Activity", size="2", weight="bold"),
+                spacing="2",
+                align="center",
+                margin_top="16px",
+            ),
+            rx.text(
+                "Follow the tools in this turn from search through document or snippet retrieval.",
+                size="1",
+                color_scheme="gray",
+                margin_top="4px",
+            ),
+            rx.vstack(
+                rx.foreach(State.selected_knowledge_turn.queries, knowledge_query_card),
+                spacing="3",
+                width="100%",
+                margin_top="12px",
+            ),
+            flex="1 1 560px",
+            width="auto",
+            min_width="0",
+        ),
+        rx.fragment(),
+    )
+
+
+def knowledge_conversation_block() -> rx.Component:
+    return rx.cond(
+        State.has_knowledge_turns,
+        rx.hstack(
+            conversation_turn_navigator(
+                State.filtered_knowledge_turns,
+                State.active_knowledge_turn,
+                State.select_knowledge_turn,
+                State.knowledge_turn_query,
+                State.set_knowledge_turn_query,
+                State.clear_knowledge_turn_query,
+                "Knowledge Turns",
+                "No knowledge-active turns match this filter.",
+            ),
+            knowledge_turn_detail(),
+            id="knowledge-conversation",
+            scroll_margin_top="128px",
+            align="start",
+            spacing="4",
+            wrap="wrap",
+            width="100%",
         ),
         rx.fragment(),
     )
@@ -2652,21 +3300,15 @@ def grounding_pipeline_block() -> rx.Component:
 
 def knowledge_panel() -> rx.Component:
     return rx.cond(
-        State.has_search_strategy | State.has_retrieval_depth | (State.knowledge_queries.length() > 0),
+        State.has_search_strategy | State.has_retrieval_depth | State.has_knowledge_turns,
         rx.vstack(
+            knowledge_page_navigation(),
+            knowledge_conversation_block(),
             search_strategy_block(),
             retrieval_depth_block(),
             grounding_pipeline_block(),
             knowledge_effectiveness_block(),
             coverage_block(),
-            rx.cond(
-                State.knowledge_queries.length() > 0,
-                card(
-                    section_title("Knowledge queries", "search"),
-                    rx.vstack(rx.foreach(State.knowledge_queries, knowledge_query_card), spacing="2", width="100%", margin_top="12px"),
-                ),
-                rx.fragment(),
-            ),
             spacing="4",
             width="100%",
         ),

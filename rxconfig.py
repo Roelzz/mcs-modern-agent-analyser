@@ -16,8 +16,13 @@ else:
         "backend_port": int(os.getenv("BACKEND_PORT", "8000")),
     }
 
+_state_manager_mode = (
+    rx.constants.StateManagerMode.REDIS if os.getenv("REDIS_URL") else rx.constants.StateManagerMode.MEMORY
+)
+
 config = rx.Config(
     app_name="web",
+    state_manager_mode=_state_manager_mode,
     plugins=[
         rx.plugins.SitemapPlugin(),
         rx.plugins.RadixThemesPlugin(

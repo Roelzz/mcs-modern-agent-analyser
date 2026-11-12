@@ -4,7 +4,7 @@ import pytest
 
 from agent_parser import parse_agent_yaml
 from analysis import analyze
-from renderer import render_markdown, render_sequence_diagram
+from renderer import build_standalone_html, render_markdown, render_sequence_diagram
 from transcript_parser import parse_transcript
 
 FIX = Path(__file__).parent / "fixtures"
@@ -83,3 +83,14 @@ def test_render_tool_failures_has_category_and_diagnosis():
     assert "Fix:" in md
     # Full connector error surfaced (untruncated signature text).
     assert "could not be found" in md
+
+
+def test_standalone_html_safely_embeds_and_sanitizes_markdown():
+    payload = "</script><img src=x onerror=alert(1)>"
+    html = build_standalone_html(payload, "Unsafe transcript")
+
+    assert "</script><img" not in html
+    assert "<\\/script><img" in html
+    assert "DOMPurify.sanitize" in html
+    assert "renderer.html" in html
+    assert "securityLevel: 'strict'" in html

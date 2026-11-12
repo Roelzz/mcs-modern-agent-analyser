@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 
 import pytest
 
-from transcript_parser import parse_knowledge_result, parse_transcript
+from transcript_parser import parse_knowledge_result, parse_transcript, parse_transcript_text
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_transcript.json"
 CONNECTOR_FAIL = Path(__file__).parent.parent / "samples" / "sample_transcript_connector_fail.json"
@@ -77,6 +78,147 @@ def test_parse_knowledge_result_zero():
 def test_parse_knowledge_result_empty():
     docs, count, zero = parse_knowledge_result(None)
     assert docs == [] and count is None and zero is False
+
+
+def test_parse_structured_snippet_result():
+    docs, count, zero = parse_knowledge_result(
+        json.dumps(
+            {
+                "mode": "snippets",
+                "query": "comfort model details",
+                "referenceId": "turn1doc1",
+                "title": "Comfort Model.docx",
+                "returned": 2,
+                "snippets": [
+                    {"rank": 1, "text": "Flexible bodies are supported."},
+                    {"rank": 2, "text": "Tyre models affect comfort."},
+                ],
+            }
+        )
+    )
+
+    assert count == 2
+    assert zero is False
+    assert len(docs) == 1
+    assert docs[0].title == "Comfort Model.docx"
+    assert docs[0].reference_id == "turn1doc1"
+    assert "Flexible bodies" in (docs[0].snippet or "")
+    assert [snippet.rank for snippet in docs[0].snippets] == [1, 2]
+    assert docs[0].snippets[1].text == "Tyre models affect comfort."
+
+
+def test_structured_empty_results_without_count_are_zero_result():
+    docs, count, zero = parse_knowledge_result(json.dumps({"mode": "semantic", "results": []}))
+    assert docs == []
+    assert count == 0
+    assert zero is True
+
+
+def test_structured_count_only_zero_is_zero_result():
+    docs, count, zero = parse_knowledge_result(json.dumps({"count": 0}))
+    assert docs == []
+    assert count == 0
+    assert zero is True
+
+
+def test_structured_document_containers_are_deduplicated():
+    docs, count, zero = parse_knowledge_result(
+        json.dumps(
+            {
+                "referenceId": "turn1doc1",
+                "title": "Policy.docx",
+                "results": [
+                    {
+                        "referenceId": "turn1doc1",
+                        "title": "Policy.docx",
+                        "url": "https://contoso.sharepoint.com/policy.docx",
+                    }
+                ],
+                "documents": [
+                    {
+                        "title": "Policy.docx",
+                        "url": "https://contoso.sharepoint.com/policy.docx",
+                    }
+                ],
+                "snippets": [{"rank": 1, "text": "Policy content."}],
+            }
+        )
+    )
+    assert count == 1
+    assert zero is False
+    assert len(docs) == 1
+    assert docs[0].reference_id == "turn1doc1"
+    assert docs[0].url == "https://contoso.sharepoint.com/policy.docx"
+    assert [snippet.rank for snippet in docs[0].snippets] == [1]
+
+
+def test_sharepoint_get_doc_is_parsed_as_knowledge_retrieval():
+    payload = [
+        {"role": "user", "text": "Open the selected document"},
+        {
+            "role": "bot",
+            "text": "I opened the document.",
+            "toolCalls": [
+                {
+                    "id": "doc-1",
+                    "name": "SharePoint_get_doc",
+                    "status": "completed",
+                    "params": {"referenceId": "turn1doc1"},
+                    "result": json.dumps(
+                        {
+                            "referenceId": "turn1doc1",
+                            "title": "Comfort Model.docx",
+                            "url": "https://contoso.sharepoint.com/Comfort%20Model.docx",
+                            "content": "Full document content.",
+                        }
+                    ),
+                }
+            ],
+        },
+    ]
+
+    convo = parse_transcript_text(json.dumps(payload))
+    tool = convo.tool_calls[0]
+
+    assert tool.name == "SharePoint_get_doc"
+    assert tool.is_knowledge_search is False
+    assert tool.is_knowledge_retrieval
+    assert tool.is_knowledge_activity
+    assert tool.result_mode == "document"
+    assert tool.result_count == 1
+    assert len(tool.retrieved_docs) == 1
+    assert tool.retrieved_docs[0].title == "Comfort Model.docx"
+    assert tool.retrieved_docs[0].reference_id == "turn1doc1"
+    assert tool.retrieved_docs[0].snippet == "Full document content."
+
+
+def test_sharepoint_get_doc_plain_text_uses_reference_parameter():
+    payload = [
+        {"role": "user", "text": "Open the selected document"},
+        {
+            "role": "bot",
+            "text": "I opened the document.",
+            "toolCalls": [
+                {
+                    "id": "doc-plain",
+                    "name": "SharePoint_get_doc",
+                    "status": "completed",
+                    "params": {"referenceId": "turn1doc2", "fileName": "Policy.docx"},
+                    "result": "The full document body.",
+                }
+            ],
+        },
+    ]
+
+    tool = parse_transcript_text(json.dumps(payload)).tool_calls[0]
+
+    assert tool.is_knowledge_search is False
+    assert tool.is_knowledge_retrieval
+    assert tool.is_knowledge_activity
+    assert tool.result_count == 1
+    assert tool.retrieved_docs[0].title == "Policy.docx"
+    assert tool.retrieved_docs[0].reference_id == "turn1doc2"
+    assert tool.retrieved_docs[0].snippet == "The full document body."
 
 
 # --------------------------------------------------------------------------- #
